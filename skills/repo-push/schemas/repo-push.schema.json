@@ -45,6 +45,7 @@
       "description": "List of remote code hosting publishing targets.",
       "type": "array",
       "minItems": 1,
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "required": ["name", "platform", "url"],
@@ -63,7 +64,7 @@
           "url": {
             "description": "Git repository remote URL (HTTPS or SSH).",
             "type": "string",
-            "pattern": "^(https?://|git@|ssh://)"
+            "pattern": "^((https?|ssh)://[a-zA-Z0-9_.-]+(:[0-9]+)?/.*|git@[a-zA-Z0-9_.-]+:.*)$"
           },
           "branch": {
             "description": "Target remote branch to push to.",

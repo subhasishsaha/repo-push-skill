@@ -164,6 +164,8 @@ def validate_config_data(data):
         errors.append(f"Invalid 'version': expected '1.0', got '{version}'.")
 
     targets = data.get("targets")
+    seen_target_names = set()
+
     if targets is None:
         errors.append("Missing required field 'targets'.")
     elif not isinstance(targets, list) or len(targets) == 0:
@@ -176,6 +178,10 @@ def validate_config_data(data):
                 errors.append(f"{prefix}: Missing required field 'name'.")
             elif not re.match(r"^[a-zA-Z0-9_-]+$", str(name)):
                 errors.append(f"{prefix}.name: '{name}' contains invalid characters (use alphanum, hyphen, underscore).")
+            elif name in seen_target_names:
+                errors.append(f"{prefix}.name: Duplicate target name '{name}' detected. Target names must be unique.")
+            else:
+                seen_target_names.add(name)
 
             platform = t.get("platform")
             if not platform:
@@ -186,14 +192,16 @@ def validate_config_data(data):
             url = t.get("url")
             if not url:
                 errors.append(f"{prefix}: Missing required field 'url'.")
-            elif not any(str(url).startswith(p) for p in VALID_URL_PREFIXES):
-                errors.append(f"{prefix}.url: '{url}' must start with https://, http://, git@, or ssh://.")
+            elif not re.match(r"^((https?|ssh)://[a-zA-Z0-9_.-]+(:[0-9]+)?/.*|git@[a-zA-Z0-9_.-]+:.*)$", str(url)):
+                errors.append(f"{prefix}.url: '{url}' is not a valid Git URL format (expected https://, ssh://, or git@).")
 
             excludes = t.get("exclude", [])
             if isinstance(excludes, list):
                 for exc in excludes:
                     if exc in ("/", "\\", ".", "*"):
                         errors.append(f"{prefix}.exclude: Dangerous root pattern '{exc}' is not allowed.")
+                    elif ".." in exc:
+                        errors.append(f"{prefix}.exclude: Path traversal '..' in '{exc}' is not allowed.")
 
     return errors
 
@@ -208,6 +216,8 @@ def validate_actions_data(actions_data, configured_platforms):
         errors.append(f"actions.yaml: Invalid 'version': expected '1.0', got '{version}'.")
 
     actions = actions_data.get("actions")
+    seen_action_names = set()
+
     if actions is None:
         errors.append("actions.yaml: Missing required field 'actions'.")
     elif not isinstance(actions, list) or len(actions) == 0:
@@ -220,6 +230,10 @@ def validate_actions_data(actions_data, configured_platforms):
                 errors.append(f"{prefix}: Missing required field 'name'.")
             elif not re.match(r"^[a-zA-Z0-9_-]+$", str(name)):
                 errors.append(f"{prefix}.name: '{name}' contains invalid characters.")
+            elif name in seen_action_names:
+                errors.append(f"{prefix}.name: Duplicate workflow name '{name}' detected. Action names must be unique.")
+            else:
+                seen_action_names.add(name)
 
             desc = act.get("description")
             if not desc or len(str(desc).strip()) < 5:
