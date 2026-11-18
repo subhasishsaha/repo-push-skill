@@ -301,7 +301,7 @@ actions:
    ```
    *(Note: Accepts `--remote` or `--target` interchangeably).*
    **Execution Guarantee & Concurrency Protection:**
-   1. **Kernel-Level OS File Lock:** Acquires non-blocking OS lock (`msvcrt.locking` on Windows, `fcntl.flock` on Unix) on `.audit/.trusted/publishing.lock` preventing concurrent push attempts and eliminating stale-lock races.
+   1. **Kernel-Level OS File Lock:** Acquires non-blocking OS lock (`msvcrt.locking` on Windows, `fcntl.flock` on Unix) on `.audit/.trusted/publishing.lock`. The lock file is maintained permanently to prevent file-deletion race conditions across concurrent processes, while the kernel automatically releases the lock upon process exit or termination.
    2. **Isolated Ephemeral Worktree:** Creates an isolated worktree under `.audit/.scratch/worktrees/wt_<id>` using `git worktree add -b __repo_push_pub_<id> <worktree_path> <HEAD>`.
    3. **Platform Tree Filtering:** Exclusions are cleanly removed inside the isolated worktree without touching the developer's working copy.
    4. **Two Publishing Modes:**

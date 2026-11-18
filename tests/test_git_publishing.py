@@ -97,6 +97,12 @@ class TestGitPublishingIntegration(unittest.TestCase):
                         pass
                 self.assertIn("Concurrent publishing operation detected", str(ctx.exception))
 
+            # After lock release, persistent lock file must remain permanently on disk (no deletion race)
+            self.assertTrue(lock_file.exists())
+            # Subsequent publisher must be able to acquire lock cleanly
+            with PublishingLock(lock_file=str(lock_file)):
+                pass
+
     def test_end_to_end_history_preserving_publishing(self):
         """Full integration test: publish to local bare remote with exclusions in history_preserving mode."""
         with tempfile.TemporaryDirectory() as td:

@@ -558,11 +558,8 @@ class AuditRunner:
             "AKIA0000000000000000",
         }
 
-        def is_test_fixture(token: str, line_text: str = "") -> bool:
+        def is_test_fixture(token: str) -> bool:
             if token in EXACT_TEST_FIXTURE_TOKENS or any(t in token for t in EXACT_TEST_FIXTURE_TOKENS):
-                return True
-            lower_line = line_text.lower()
-            if "# noqa" in lower_line or "test-fixture" in lower_line or "# test-credential" in lower_line or "test_credential" in lower_line:
                 return True
             lower_token = token.lower()
             if "example" in lower_token or "placeholder" in lower_token or "dummy" in lower_token:
@@ -589,7 +586,7 @@ class AuditRunner:
                     for m in pat.finditer(line):
                         token_str = m.group(1) if m.groups() else m.group(0)
                         raw_str = m.group(0)
-                        if is_test_fixture(token_str, line) or is_test_fixture(raw_str, line):
+                        if is_test_fixture(token_str) or is_test_fixture(raw_str):
                             continue
                         if "re.compile" in line or "AKIA[0-9A-Z]" in line:
                             continue
@@ -638,7 +635,7 @@ class AuditRunner:
                         for m in pat.finditer(line):
                             token_str = m.group(1) if m.groups() else m.group(0)
                             raw_str = m.group(0)
-                            if is_test_fixture(token_str, line) or is_test_fixture(raw_str, line):
+                            if is_test_fixture(token_str) or is_test_fixture(raw_str):
                                 continue
                             if "re.compile" in line or "AKIA[0-9A-Z]" in line:
                                 continue

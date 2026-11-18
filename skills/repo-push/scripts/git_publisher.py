@@ -4,7 +4,7 @@ git_publisher.py — Safe, Deterministic Multi-Platform Git Publishing Engine
 
 Implements an isolated, worktree-based publishing pipeline that:
 1. NEVER modifies the user's active branch, working tree, or index.
-2. Uses atomic OS-level exclusive file locking (O_CREAT | O_EXCL) to prevent concurrency races.
+2. Uses persistent OS kernel-level file locking (msvcrt.locking / fcntl.flock) to prevent concurrency races without lock deletion.
 3. Supports two explicit publishing modes:
    - 'history_preserving' (default): Preserves full commit history; filters release tree atop HEAD.
    - 'clean_snapshot': Creates an isolated single-commit snapshot with zero past history.
@@ -97,11 +97,6 @@ class PublishingLock:
             except Exception:
                 pass
             self.fd = None
-        if os.path.exists(self.lock_file):
-            try:
-                os.remove(self.lock_file)
-            except Exception:
-                pass
 
 
 def git_cmd(args, cwd=None, check=True):

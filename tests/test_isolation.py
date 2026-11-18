@@ -149,6 +149,57 @@ class TestIsolation(unittest.TestCase):
         self.assertNotEqual(res_restore.returncode, 0)
         self.assertIn("Backup verification failed", res_restore.stderr)
 
+    def test_corrupted_key_fails_closed(self):
+        """A key file containing fewer than 32 bytes must be rejected as corrupted."""
+        import importlib.util
+        import hashlib
+        spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
+        iso_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iso_mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
+            key_file = Path(tempfile.gettempdir()) / f".repo_push_key_{root_hash}.secret"
+            # Write corrupted 16-byte key
+            key_file.write_bytes(b"0123456789abcdef")
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertIn("Corrupted HMAC session key", str(ctx.exception))
+            finally:
+                if key_file.exists():
+                    try:
+                        key_file.unlink()
+                    except Exception:
+                        pass
+
+    def test_atomic_key_persistence_and_readback(self):
+        """Key generation must create exactly 32 bytes and return identical key on subsequent calls."""
+        import importlib.util
+        import hashlib
+        spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
+        iso_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iso_mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
+            key_file = Path(tempfile.gettempdir()) / f".repo_push_key_{root_hash}.secret"
+            try:
+                key1 = iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertEqual(len(key1), 32)
+                self.assertTrue(key_file.exists())
+                self.assertEqual(len(key_file.read_bytes()), 32)
+
+                # Subsequent call must read identical key
+                key2 = iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertEqual(key1, key2)
+            finally:
+                if key_file.exists():
+                    try:
+                        key_file.unlink()
+                    except Exception:
+                        pass
+
 
 if __name__ == "__main__":
     unittest.main()

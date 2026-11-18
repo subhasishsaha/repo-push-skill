@@ -24,6 +24,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 DEFAULT_REPORTS_DIR = os.path.abspath(os.path.join(".audit", "reports"))
@@ -45,43 +47,94 @@ def get_session_hmac_key(repo_root=None):
 
     root = os.path.abspath(repo_root or ".")
     root_hash = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
-    key_file = Path(tempfile.gettempdir()) / f".repo_push_key_{root_hash}.secret"
+    key_dir = Path(tempfile.gettempdir())
+    key_file = key_dir / f".repo_push_key_{root_hash}.secret"
 
-    if key_file.exists():
+    # Helper: read and strictly validate key file
+    def read_valid_key(path: Path) -> bytes:
+        if not path.exists():
+            return None
         try:
-            raw_key = key_file.read_bytes()
-            if len(raw_key) >= 32:
-                return raw_key[:32]
+            data = path.read_bytes()
         except Exception as e:
-            raise RuntimeError(f"Failed to read existing HMAC session key at '{key_file}': {e}")
+            raise RuntimeError(f"Failed to read HMAC session key at '{path}': {e}")
+        if len(data) == 32:
+            return data
+        elif len(data) > 0 and len(data) != 32:
+            raise RuntimeError(f"Corrupted HMAC session key at '{path}': expected exactly 32 bytes, found {len(data)} bytes.")
+        return None  # 0 bytes (e.g. midway through initialization)
 
-    # Atomic creation of fresh 256-bit key
+    existing = read_valid_key(key_file)
+    if existing is not None:
+        return existing
+
+    # Step 1: Write fresh 256-bit key to a unique temporary file in tempdir
     new_key = os.urandom(32)
+    temp_key_file = key_dir / f".repo_push_key_{root_hash}_{os.getpid()}_{uuid.uuid4().hex}.tmp"
     try:
-        # Use O_CREAT | O_EXCL to prevent race conditions during concurrent initialization
-        fd = os.open(str(key_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        temp_fd = os.open(str(temp_key_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
-            os.write(fd, new_key)
+            os.write(temp_fd, new_key)
+            os.fsync(temp_fd)
         finally:
-            os.close(fd)
-    except FileExistsError:
-        # Another process initialized the key concurrently; read and return it
-        try:
-            return key_file.read_bytes()[:32]
-        except Exception as e:
-            raise RuntimeError(f"Concurrent key initialization conflict reading '{key_file}': {e}")
+            os.close(temp_fd)
     except Exception as e:
-        raise RuntimeError(f"Failed to persist HMAC session key to '{key_file}': {e}")
+        raise RuntimeError(f"Failed to create temporary HMAC key file at '{temp_key_file}': {e}")
 
-    # Verify that the persisted key can be read back reliably
+    # Step 2: Atomically publish without overwriting an existing key
+    published = False
     try:
-        persisted = key_file.read_bytes()
-        if len(persisted) < 32 or persisted[:32] != new_key:
-            raise RuntimeError(f"Key verification failed: read-back key mismatch on '{key_file}'.")
-    except Exception as e:
-        raise RuntimeError(f"Failed to verify persisted HMAC key on '{key_file}': {e}")
+        if os.name == "nt":
+            try:
+                os.rename(str(temp_key_file), str(key_file))
+                published = True
+            except FileExistsError:
+                published = False
+        else:
+            try:
+                os.link(str(temp_key_file), str(key_file))
+                published = True
+            except FileExistsError:
+                published = False
+            except OSError:
+                if not key_file.exists():
+                    os.rename(str(temp_key_file), str(key_file))
+                    published = True
+                else:
+                    published = False
+    finally:
+        if temp_key_file.exists():
+            try:
+                os.unlink(str(temp_key_file))
+            except Exception:
+                pass
 
-    return new_key
+    if published:
+        # Step 3: Verify that the persisted key can be read back reliably
+        try:
+            persisted = key_file.read_bytes()
+            if len(persisted) != 32 or persisted != new_key:
+                raise RuntimeError(f"Key verification failed: read-back key mismatch on '{key_file}'.")
+            return new_key
+        except Exception as e:
+            raise RuntimeError(f"Failed to verify persisted HMAC key on '{key_file}': {e}")
+
+    # Step 4: If another process won publication race, retry reading until valid with bounded timeout
+    timeout = 2.0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        valid_key = read_valid_key(key_file)
+        if valid_key is not None:
+            return valid_key
+        time.sleep(0.01)
+
+    # Fail closed if valid 32-byte key is not available
+    if key_file.exists():
+        actual_len = len(key_file.read_bytes())
+        raise RuntimeError(
+            f"Timeout waiting for concurrent HMAC key initialization on '{key_file}' (found {actual_len} bytes, expected exactly 32 bytes)."
+        )
+    raise RuntimeError(f"Failed to initialize or read HMAC session key at '{key_file}' within {timeout}s.")
 
 
 def hash_file(filepath):

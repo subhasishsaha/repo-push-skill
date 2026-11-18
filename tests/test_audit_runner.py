@@ -132,8 +132,29 @@ def calculate_tax():
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             # A 36-char token containing the word 'test'
-            token_with_test = "ghp_98765test43210fedcbamock9876543210fe"  # test-fixture
-            (repo / "service.py").write_text(f'AUTH_SECRET = "{token_with_test}"', encoding="utf-8")
+            # Split across variables so test file source code itself does not contain a contiguous credential
+            prefix = "ghp_"
+            body = "98765test43210fedcbamock9876543210fe"
+            token_with_test = prefix + body
+            (repo / "service.py").write_text(f'AUTH_SECRET = "{token_with_test}"\n', encoding="utf-8")
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_4_secrets()
+            self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 1)
+
+    def test_gate_4_cannot_be_bypassed_by_comment(self):
+        """Comments such as # test-fixture or # noqa must NEVER suppress detected credentials."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            prefix = "ghp_"
+            body = "9876543210fedcba9876543210fedcba9876"
+            token = prefix + body
+            # Write credential with inline comments intended to bypass filters
+            (repo / "compromised.py").write_text(
+                f'SECRET_KEY = "{token}"  # test-fixture # noqa: secret # test-credential\n',
+                encoding="utf-8"
+            )
             runner = AuditRunner(repo)
             gate = runner.run_gate_4_secrets()
             self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
