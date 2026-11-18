@@ -43,7 +43,7 @@ Navigate to any codebase you want to prepare for remote publishing:
    - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push/config.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and drafts `.repo-push/config.yaml` with canonical mutual exclusion rules for explicit user verification before any publishing operation.
    - **Phase 1 (README Gate):** The Orchestrator verifies your `README.md` against intended functionality and prompts for confirmation. (If missing, `explorer` and `documenter` collaborate to draft one).
    - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). If `.repo-push/actions.yaml` is present, it compiles declarative action intents into native platform workflows. The `auditor` executes on-demand inspection scripts in `.audit/.scratch/` or runs the canonical `audit_runner.py`. The `remediator` fixes all issues in application code.
-   - **Phase 3 (Certification & Filtered Remote Push):** Upon passing all 6 verification gates (`GATE_1` through `GATE_6`), the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and publishes using isolated Git worktrees with atomic concurrency locking (`os.O_CREAT | os.O_EXCL`) and platform exclusion filtering.
+   - **Phase 3 (Certification & Filtered Remote Push):** Upon passing all 6 verification gates (`GATE_1` through `GATE_6`), the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and publishes using isolated Git worktrees with persistent kernel-level OS file locking (`fcntl.flock` / `msvcrt.locking`) and platform exclusion filtering.
 
 ---
 
@@ -207,12 +207,12 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   ├── repo-push.schema.json                  # Schema for config.yaml
 │   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
-├── tests/                                     # Automated test suite (37 unit & integration tests across 6 modules)
+├── tests/                                     # Automated test suite (44 unit & integration tests across 6 modules)
 │   ├── test_isolation.py                      # Fail-closed behavioral isolation & HMAC tests
 │   ├── test_config_validator.py               # Schema, duplicate target, and path traversal tests
 │   ├── test_config_generator.py               # Deterministic config generator tests
 │   ├── test_schema_validation.py              # JSON Schema syntax tests
-│   ├── test_git_publishing.py                 # Isolated worktree publishing & atomic lock tests
+│   ├── test_git_publishing.py                 # Isolated worktree publishing & persistent lock tests
 │   └── test_audit_runner.py                   # 6-Gate verification & AST/secret masking tests
 │
 ├── skills/
@@ -223,7 +223,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │       │   ├── generate_config.py             # Deterministic remote & platform discovery
 │       │   ├── validate_config.py             # PyYAML & JSON Schema validator & cross-referencer
 │       │   ├── enforce_isolation.py           # Fail-closed OS file locking, HMAC authentication & rollback
-│       │   ├── git_publisher.py               # Isolated Git worktree publisher with atomic concurrency lock
+│       │   ├── git_publisher.py               # Isolated Git worktree publisher with persistent kernel-level OS file locking
 │       │   └── audit_runner.py                # 6-Gate canonical evidence-based verification engine
 │       │
 │       ├── schemas/                           # Bundled JSON schemas

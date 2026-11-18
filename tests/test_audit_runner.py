@@ -161,6 +161,38 @@ def calculate_tax():
             blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
             self.assertGreaterEqual(len(blockers), 1)
 
+    def test_gate_4_does_not_exempt_dummy_example_placeholder(self):
+        """Credentials containing words like dummy, example, or placeholder must NOT be exempted."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            prefix = "ghp_"
+            cases = [
+                prefix + "dummy" + "a" * 31,
+                prefix + "example" + "b" * 29,
+                prefix + "placeholder" + "c" * 25,
+            ]
+            for idx, token in enumerate(cases):
+                (repo / f"test_{idx}.py").write_text(f'AUTH = "{token}"\n', encoding="utf-8")
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_4_secrets()
+            self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 3)
+
+    def test_gate_4_does_not_exempt_credential_on_re_compile_line(self):
+        """A credential placed on the same line as re.compile must NOT escape detection."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            prefix = "ghp_"
+            body = "123456789098765432101234567890987654"
+            token = prefix + body
+            (repo / "source.py").write_text(f'PAT = re.compile(r".*"); AUTH = "{token}"\n', encoding="utf-8")
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_4_secrets()
+            self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

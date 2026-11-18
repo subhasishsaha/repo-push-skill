@@ -123,20 +123,44 @@ def get_current_commit(cwd=None):
 
 
 def resolve_expected_url_from_config(remote_name, cwd=None):
-    """Attempts to find the target's configured URL from .repo-push/config.yaml."""
+    """
+    Finds the target's configured URL from .repo-push/config.yaml.
+    Fails closed if configuration file is missing, malformed, or missing the target/URL.
+    """
     root = Path(cwd or ".").resolve()
     cfg_path = root / ".repo-push" / "config.yaml"
-    if cfg_path.exists():
-        try:
-            import yaml
-            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and "targets" in data:
-                for t in data.get("targets", []):
-                    if t.get("name") == remote_name:
-                        return t.get("url")
-        except Exception:
-            pass
-    return None
+    if not cfg_path.exists():
+        raise RuntimeError(
+            f"Configuration file not found at '{cfg_path}'. "
+            f"Cannot verify remote '{remote_name}' without configuration or explicit --expected-url."
+        )
+    try:
+        import yaml
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"Malformed configuration file at '{cfg_path}': {e}")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Malformed configuration file at '{cfg_path}': root structure must be a dictionary.")
+
+    targets = data.get("targets")
+    if not targets or not isinstance(targets, list):
+        raise RuntimeError(f"Configuration file at '{cfg_path}' is missing mandatory 'targets' list.")
+
+    target_found = None
+    for t in targets:
+        if isinstance(t, dict) and t.get("name") == remote_name:
+            target_found = t
+            break
+
+    if not target_found:
+        raise RuntimeError(f"Target remote '{remote_name}' is not defined under 'targets' in '{cfg_path}'.")
+
+    url = target_found.get("url")
+    if not url or not str(url).strip():
+        raise RuntimeError(f"Target remote '{remote_name}' in '{cfg_path}' is missing a valid 'url'.")
+
+    return str(url).strip()
 
 
 def normalize_git_url(url):
@@ -156,6 +180,8 @@ def validate_remote(remote_name, expected_url=None, cwd=None):
     """
     Verifies that the remote exists and checks that configured remote push URLs
     match the expected target URL declared in config or CLI.
+    Fails closed if remote does not exist, expected URL cannot be resolved,
+    or any push URL does not match the expected URL.
     """
     res = git_cmd(["remote"], cwd=cwd, check=False)
     remotes = [r.strip() for r in res.stdout.splitlines() if r.strip()]
@@ -165,22 +191,30 @@ def validate_remote(remote_name, expected_url=None, cwd=None):
     if not expected_url:
         expected_url = resolve_expected_url_from_config(remote_name, cwd=cwd)
 
-    if expected_url:
-        norm_expected = normalize_git_url(expected_url)
-        # Check all push URLs configured for this remote
-        url_res = git_cmd(["remote", "get-url", "--push", "--all", remote_name], cwd=cwd, check=False)
-        actual_urls = [u.strip() for u in url_res.stdout.splitlines() if u.strip()]
-        if not actual_urls:
-            # Fallback to standard get-url
-            u_fallback = git_cmd(["remote", "get-url", remote_name], cwd=cwd, check=False)
-            actual_urls = [u.strip() for u in u_fallback.stdout.splitlines() if u.strip()]
+    if not expected_url:
+        raise RuntimeError(
+            f"No expected URL could be resolved for target remote '{remote_name}'. "
+            f"Specify --expected-url or declare target '{remote_name}' with a 'url' in .repo-push/config.yaml."
+        )
 
-        for actual_url in actual_urls:
-            if normalize_git_url(actual_url) != norm_expected:
-                raise ValueError(
-                    f"Remote push URL mismatch for '{remote_name}': expected target URL '{expected_url}', "
-                    f"but git remote is configured with '{actual_url}'."
-                )
+    norm_expected = normalize_git_url(expected_url)
+    # Check all push URLs configured for this remote
+    url_res = git_cmd(["remote", "get-url", "--push", "--all", remote_name], cwd=cwd, check=False)
+    actual_urls = [u.strip() for u in url_res.stdout.splitlines() if u.strip()]
+    if not actual_urls:
+        # Fallback to standard get-url
+        u_fallback = git_cmd(["remote", "get-url", remote_name], cwd=cwd, check=False)
+        actual_urls = [u.strip() for u in u_fallback.stdout.splitlines() if u.strip()]
+
+    if not actual_urls:
+        raise RuntimeError(f"No push URLs configured in git remote '{remote_name}'.")
+
+    for actual_url in actual_urls:
+        if normalize_git_url(actual_url) != norm_expected:
+            raise ValueError(
+                f"Remote push URL mismatch for '{remote_name}': expected target URL '{expected_url}', "
+                f"but git remote is configured with '{actual_url}'."
+            )
     return True
 
 

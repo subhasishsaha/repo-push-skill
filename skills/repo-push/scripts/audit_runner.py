@@ -560,15 +560,7 @@ class AuditRunner:
         }
 
         def is_test_fixture(token: str) -> bool:
-            if token in EXACT_TEST_FIXTURE_TOKENS or any(t in token for t in EXACT_TEST_FIXTURE_TOKENS):
-                return True
-            lower_token = token.lower()
-            if "example" in lower_token or "placeholder" in lower_token or "dummy" in lower_token:
-                return True
-            token_body = token.split("_", 1)[-1] if "_" in token else token
-            if len(set(token_body)) <= 2:
-                return True
-            return False
+            return token in EXACT_TEST_FIXTURE_TOKENS
 
         # 2. Check file contents for tokens and developer paths (including tests/)
         for tf in scannable_files:
@@ -588,8 +580,6 @@ class AuditRunner:
                         token_str = m.group(1) if m.groups() else m.group(0)
                         raw_str = m.group(0)
                         if is_test_fixture(token_str) or is_test_fixture(raw_str):
-                            continue
-                        if "re.compile" in line or "AKIA[0-9A-Z]" in line:
                             continue
                         self._add_finding(
                             "SECRETS_AND_LEAKS", "BLOCKER", f"{rel}:{lineno}",
@@ -637,8 +627,6 @@ class AuditRunner:
                             token_str = m.group(1) if m.groups() else m.group(0)
                             raw_str = m.group(0)
                             if is_test_fixture(token_str) or is_test_fixture(raw_str):
-                                continue
-                            if "re.compile" in line or "AKIA[0-9A-Z]" in line:
                                 continue
                             self._add_finding(
                                 "SECRETS_AND_LEAKS", "BLOCKER", "git_history",

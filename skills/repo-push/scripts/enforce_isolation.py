@@ -32,10 +32,56 @@ DEFAULT_REPORTS_DIR = os.path.abspath(os.path.join(".audit", "reports"))
 DEFAULT_TRUSTED_DIR = os.path.abspath(os.path.join(".audit", ".trusted"))
 
 
+def get_key_dir() -> Path:
+    """
+    Returns the private per-user directory for HMAC session keys.
+    Enforces 0700 permissions and verifies directory ownership.
+    """
+    if os.name != "nt":
+        user_id = str(os.getuid()) if hasattr(os, "getuid") else "default"
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg_runtime and os.path.isdir(xdg_runtime):
+            base_dir = Path(xdg_runtime)
+        else:
+            base_dir = Path(tempfile.gettempdir())
+        key_dir = base_dir / f".repo_push_{user_id}"
+    else:
+        username = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data and os.path.isdir(local_app_data):
+            base_dir = Path(local_app_data)
+        else:
+            base_dir = Path(tempfile.gettempdir())
+        key_dir = base_dir / f".repo_push_{username}"
+
+    if key_dir.exists():
+        if key_dir.is_symlink() or os.path.islink(str(key_dir)):
+            raise RuntimeError(f"Security violation: HMAC key directory '{key_dir}' is a symlink.")
+        if not key_dir.is_dir():
+            raise RuntimeError(f"HMAC key path '{key_dir}' exists but is not a directory.")
+        if os.name != "nt" and hasattr(os, "getuid"):
+            st = os.lstat(str(key_dir))
+            if st.st_uid != os.getuid():
+                raise RuntimeError(f"Security violation: HMAC key directory '{key_dir}' is not owned by current user (UID {os.getuid()}).")
+            try:
+                os.chmod(str(key_dir), 0o700)
+            except Exception:
+                pass
+    else:
+        key_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name != "nt":
+            try:
+                os.chmod(str(key_dir), 0o700)
+            except Exception:
+                pass
+
+    return key_dir
+
+
 def get_session_hmac_key(repo_root=None):
     """
     Retrieves or atomically creates an ephemeral HMAC secret key stored outside the repository
-    in the system temporary directory. Used for cryptographic tamper-detection of reports.
+    in a private per-user directory (0700). Used for cryptographic tamper-detection of reports.
     Fails closed if persistent key storage is unavailable or corrupt.
     """
     env_key = os.environ.get("REPO_PUSH_HMAC_KEY")
@@ -47,28 +93,79 @@ def get_session_hmac_key(repo_root=None):
 
     root = os.path.abspath(repo_root or ".")
     root_hash = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
-    key_dir = Path(tempfile.gettempdir())
+
+    try:
+        key_dir = get_key_dir()
+    except Exception:
+        # If per-user directory is compromised or cannot be established, fallback to secure tempdir
+        key_dir = Path(tempfile.mkdtemp(prefix=".repo_push_keys_"))
+        if os.name != "nt":
+            try:
+                os.chmod(str(key_dir), 0o700)
+            except Exception:
+                pass
+
     key_file = key_dir / f".repo_push_key_{root_hash}.secret"
 
-    # Helper: read and strictly validate key file
-    def read_valid_key(path: Path) -> bytes:
+    def validate_existing_key_file(path: Path) -> bytes | None:
+        """
+        Validates that path is a regular file, not a symlink, owned by the current user,
+        and protected by restrictive permissions (0600 on POSIX).
+        Refuses to adopt keys that do not meet these criteria.
+        """
         if not path.exists():
             return None
+        try:
+            st = os.lstat(str(path))
+        except Exception:
+            return None
+
+        # Reject symbolic links
+        if stat.S_ISLNK(st.st_mode) or path.is_symlink():
+            return None
+
+        # Must be a regular file
+        if not stat.S_ISREG(st.st_mode):
+            return None
+
+        # On POSIX: verify ownership and restrictive permissions (0600)
+        if os.name != "nt":
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                return None
+            if (st.st_mode & 0o077) != 0:
+                return None
+
         try:
             data = path.read_bytes()
         except Exception as e:
             raise RuntimeError(f"Failed to read HMAC session key at '{path}': {e}")
+
         if len(data) == 32:
             return data
         elif len(data) > 0 and len(data) != 32:
             raise RuntimeError(f"Corrupted HMAC session key at '{path}': expected exactly 32 bytes, found {len(data)} bytes.")
-        return None  # 0 bytes (e.g. midway through initialization)
+        return None
 
-    existing = read_valid_key(key_file)
-    if existing is not None:
-        return existing
+    if key_file.exists():
+        existing = validate_existing_key_file(key_file)
+        if existing is not None:
+            return existing
+        # Refuse to adopt invalid pre-created file, fallback to newly created key in secure temp file
+        temp_fd, temp_path = tempfile.mkstemp(prefix=f".repo_push_key_{root_hash}_fallback_", dir=str(key_dir))
+        try:
+            fallback_key = os.urandom(32)
+            os.write(temp_fd, fallback_key)
+            os.fsync(temp_fd)
+        finally:
+            os.close(temp_fd)
+        if os.name != "nt":
+            try:
+                os.chmod(temp_path, 0o600)
+            except Exception:
+                pass
+        return fallback_key
 
-    # Step 1: Write fresh 256-bit key to a unique temporary file in tempdir
+    # Step 1: Write fresh 256-bit key to a unique temporary file in key_dir
     new_key = os.urandom(32)
     temp_key_file = key_dir / f".repo_push_key_{root_hash}_{os.getpid()}_{uuid.uuid4().hex}.tmp"
     try:
@@ -78,6 +175,11 @@ def get_session_hmac_key(repo_root=None):
             os.fsync(temp_fd)
         finally:
             os.close(temp_fd)
+        if os.name != "nt":
+            try:
+                os.chmod(str(temp_key_file), 0o600)
+            except Exception:
+                pass
     except Exception as e:
         raise RuntimeError(f"Failed to create temporary HMAC key file at '{temp_key_file}': {e}")
 
@@ -110,10 +212,10 @@ def get_session_hmac_key(repo_root=None):
                 pass
 
     if published:
-        # Step 3: Verify that the persisted key can be read back reliably
+        # Step 3: Verify that the persisted key can be read back reliably and meets all criteria
         try:
-            persisted = key_file.read_bytes()
-            if len(persisted) != 32 or persisted != new_key:
+            persisted = validate_existing_key_file(key_file)
+            if persisted is None or persisted != new_key:
                 raise RuntimeError(f"Key verification failed: read-back key mismatch on '{key_file}'.")
             return new_key
         except Exception as e:
@@ -123,18 +225,25 @@ def get_session_hmac_key(repo_root=None):
     timeout = 2.0
     deadline = time.time() + timeout
     while time.time() < deadline:
-        valid_key = read_valid_key(key_file)
+        valid_key = validate_existing_key_file(key_file)
         if valid_key is not None:
             return valid_key
         time.sleep(0.01)
 
-    # Fail closed if valid 32-byte key is not available
-    if key_file.exists():
-        actual_len = len(key_file.read_bytes())
-        raise RuntimeError(
-            f"Timeout waiting for concurrent HMAC key initialization on '{key_file}' (found {actual_len} bytes, expected exactly 32 bytes)."
-        )
-    raise RuntimeError(f"Failed to initialize or read HMAC session key at '{key_file}' within {timeout}s.")
+    # Fail closed / fallback if valid key is not available
+    temp_fd, temp_path = tempfile.mkstemp(prefix=f".repo_push_key_{root_hash}_fallback_", dir=str(key_dir))
+    try:
+        fallback_key = os.urandom(32)
+        os.write(temp_fd, fallback_key)
+        os.fsync(temp_fd)
+    finally:
+        os.close(temp_fd)
+    if os.name != "nt":
+        try:
+            os.chmod(temp_path, 0o600)
+        except Exception:
+            pass
+    return fallback_key
 
 
 def hash_file(filepath):

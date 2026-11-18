@@ -144,6 +144,14 @@ class TestGitPublishingIntegration(unittest.TestCase):
             run_cmd(["git", "init", "--bare", "-b", "main", str(bare_remote)])
             run_cmd(["git", "remote", "add", "origin", str(bare_remote)], cwd=src_repo)
 
+            # Write .repo-push/config.yaml for origin target
+            cfg_dir = src_repo / ".repo-push"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.yaml").write_text(
+                f"targets:\n  - name: origin\n    url: '{str(bare_remote)}'\n",
+                encoding="utf-8"
+            )
+
             # 3. Execute publisher script in history_preserving mode with exclusion
             res_pub = run_cmd(
                 [
@@ -196,6 +204,14 @@ class TestGitPublishingIntegration(unittest.TestCase):
             run_cmd(["git", "init", "--bare", "-b", "main", str(bare_remote)])
             run_cmd(["git", "remote", "add", "origin", str(bare_remote)], cwd=src_repo)
 
+            # Write .repo-push/config.yaml for origin target
+            cfg_dir = src_repo / ".repo-push"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.yaml").write_text(
+                f"targets:\n  - name: origin\n    url: '{str(bare_remote)}'\n",
+                encoding="utf-8"
+            )
+
             # Publish clean snapshot excluding private_conf.json
             res_pub = run_cmd(
                 [
@@ -241,6 +257,55 @@ class TestGitPublishingIntegration(unittest.TestCase):
             # Check that worktree list contains only the main worktree
             wt_list = run_cmd(["git", "worktree", "list"], cwd=src_repo).stdout.strip().splitlines()
             self.assertEqual(len(wt_list), 1)
+
+    def test_missing_config_fails_remote_validation(self):
+        """Missing .repo-push/config.yaml must fail closed when validating remote without --expected-url."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_cmd(["git", "init", "-b", "main"], cwd=repo)
+            run_cmd(["git", "remote", "add", "origin", "https://github.com/test/repo.git"], cwd=repo)
+            res = run_cmd([sys.executable, str(SCRIPT), "--remote", "origin"], cwd=repo, check=False)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Configuration file not found", res.stderr)
+
+    def test_malformed_yaml_fails_remote_validation(self):
+        """Malformed YAML in .repo-push/config.yaml must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_cmd(["git", "init", "-b", "main"], cwd=repo)
+            run_cmd(["git", "remote", "add", "origin", "https://github.com/test/repo.git"], cwd=repo)
+            cfg_dir = repo / ".repo-push"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.yaml").write_text("targets: [malformed : yaml : {", encoding="utf-8")
+            res = run_cmd([sys.executable, str(SCRIPT), "--remote", "origin"], cwd=repo, check=False)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Malformed configuration file", res.stderr)
+
+    def test_missing_target_fails_remote_validation(self):
+        """Configuration missing the target remote entry must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_cmd(["git", "init", "-b", "main"], cwd=repo)
+            run_cmd(["git", "remote", "add", "origin", "https://github.com/test/repo.git"], cwd=repo)
+            cfg_dir = repo / ".repo-push"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.yaml").write_text("targets:\n  - name: gitlab\n    url: 'https://gitlab.com/test/repo.git'\n", encoding="utf-8")
+            res = run_cmd([sys.executable, str(SCRIPT), "--remote", "origin"], cwd=repo, check=False)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Target remote 'origin' is not defined under 'targets'", res.stderr)
+
+    def test_missing_target_url_fails_remote_validation(self):
+        """Target entry missing a URL must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_cmd(["git", "init", "-b", "main"], cwd=repo)
+            run_cmd(["git", "remote", "add", "origin", "https://github.com/test/repo.git"], cwd=repo)
+            cfg_dir = repo / ".repo-push"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            (cfg_dir / "config.yaml").write_text("targets:\n  - name: origin\n    url: ''\n", encoding="utf-8")
+            res = run_cmd([sys.executable, str(SCRIPT), "--remote", "origin"], cwd=repo, check=False)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("missing a valid 'url'", res.stderr)
 
 
 if __name__ == "__main__":

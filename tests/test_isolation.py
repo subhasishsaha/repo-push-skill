@@ -159,7 +159,8 @@ class TestIsolation(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
-            key_file = Path(tempfile.gettempdir()) / f".repo_push_key_{root_hash}.secret"
+            key_dir = iso_mod.get_key_dir()
+            key_file = key_dir / f".repo_push_key_{root_hash}.secret"
             # Write corrupted 16-byte key
             key_file.write_bytes(b"0123456789abcdef")
             try:
@@ -183,7 +184,8 @@ class TestIsolation(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
-            key_file = Path(tempfile.gettempdir()) / f".repo_push_key_{root_hash}.secret"
+            key_dir = iso_mod.get_key_dir()
+            key_file = key_dir / f".repo_push_key_{root_hash}.secret"
             try:
                 key1 = iso_mod.get_session_hmac_key(repo_root=td)
                 self.assertEqual(len(key1), 32)
@@ -197,6 +199,44 @@ class TestIsolation(unittest.TestCase):
                 if key_file.exists():
                     try:
                         key_file.unlink()
+                    except Exception:
+                        pass
+
+    def test_refuse_to_adopt_symlink_key(self):
+        """Pre-created symlink at key_file path must be rejected and must fallback to a secure temp key."""
+        import importlib.util
+        import hashlib
+        spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
+        iso_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iso_mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
+            key_dir = iso_mod.get_key_dir()
+            key_file = key_dir / f".repo_push_key_{root_hash}.secret"
+            target_decoy = key_dir / f".decoy_target_{root_hash}.txt"
+            target_decoy.write_bytes(b"A" * 32)
+
+            try:
+                # Try to create symlink (may require admin on Windows; if os.symlink fails, skip symlink test)
+                try:
+                    os.symlink(str(target_decoy), str(key_file))
+                except OSError:
+                    self.skipTest("Symlink creation not permitted in this environment")
+
+                # get_session_hmac_key must NOT adopt the symlinked file's key
+                key = iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertEqual(len(key), 32)
+                self.assertNotEqual(key, b"A" * 32)
+            finally:
+                if key_file.exists() or key_file.is_symlink():
+                    try:
+                        key_file.unlink()
+                    except Exception:
+                        pass
+                if target_decoy.exists():
+                    try:
+                        target_decoy.unlink()
                     except Exception:
                         pass
 
