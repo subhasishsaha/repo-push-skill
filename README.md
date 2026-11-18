@@ -40,10 +40,10 @@ Navigate to any codebase you want to prepare for remote publishing:
    > *"Perform an adversarial pre-push review on this codebase."*
 
 3. **Autonomous Verification & Remote Publishing Workflow:**
-   - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push/config.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and generates `.repo-push/config.yaml` with canonical mutual exclusion rules deterministically (zero user input required).
+   - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push/config.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and drafts `.repo-push/config.yaml` with canonical mutual exclusion rules for explicit user verification before any publishing operation.
    - **Phase 1 (README Gate):** The Orchestrator verifies your `README.md` against intended functionality and prompts for confirmation. (If missing, `explorer` and `documenter` collaborate to draft one).
-   - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). If `.repo-push/actions.yaml` is present, it compiles declarative action intents into native platform workflows. The `auditor` executes on-demand inspection scripts in `.audit/.scratch/`. The `remediator` fixes all issues in code.
-   - **Phase 3 (Certification & Filtered Remote Push):** Upon passing all 6 verification gates (`GATE_1` through `GATE_6`), the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and pushes cleanly using ephemeral Git tree filtering so platform clutter never cross-contaminates.
+   - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). If `.repo-push/actions.yaml` is present, it compiles declarative action intents into native platform workflows. The `auditor` executes on-demand inspection scripts in `.audit/.scratch/` or runs the canonical `audit_runner.py`. The `remediator` fixes all issues in application code.
+   - **Phase 3 (Certification & Filtered Remote Push):** Upon passing all 6 verification gates (`GATE_1` through `GATE_6`), the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and publishes using isolated Git worktrees with atomic concurrency locking (`os.O_CREAT | os.O_EXCL`) and platform exclusion filtering.
 
 ---
 
@@ -121,7 +121,10 @@ actions:
 
 - **Deterministic Remote Setup:** When you already have configured remotes, `repo-push` generates `config.yaml` deterministically from `git remote -v`, resolving active branches and targets for user verification before publishing.
 - **Strict Cross-Validation (`ACT-001`):** Prevents dead code by ensuring every platform referenced in `actions.yaml` is actively defined in `config.yaml`.
-- **Pristine Working Copy:** Exclusion filtering executes inside isolated Git worktrees (`git worktree add`)—your active branch (`main`) and working copy remain untouched. Temporary worktrees and release branches are managed with structured `try ... finally` cleanup.
+- **Isolated Worktree Publishing:** Exclusion filtering executes inside isolated Git worktrees (`git worktree add`)—your active branch (`main`) and working copy files remain untouched. Temporary worktrees and release branches are managed with structured `try ... finally` cleanup (with visible warnings if manual cleanup is needed after unexpected process aborts).
+- **Two Distinct Publishing Modes:**
+  - `history_preserving` (default): Publishes a new release commit with exclusions applied, while retaining full prior commit ancestry.
+  - `clean_snapshot`: Publishes a single orphan commit with zero prior ancestry. Forbids `--tags` to prevent leaking excluded files or history through existing Git tags.
 
 ---
 
@@ -131,12 +134,15 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 
 1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
 2. **Layer 2 (OS File-Lock Barrier):** `.audit/reports/` and `.audit/.trusted/` are locked with OS read-only attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (HMAC Authentication & Automatic Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 (using an ephemeral session secret key stored outside the repository in the system temp directory) is recorded prior to remediation. If any tampering, signature mismatch, unauthorized file addition, or deletion is detected, the turn fails closed and pristine reports are restored from backup.
+3. **Layer 3 (HMAC Authentication & Fail-Closed Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 (using an ephemeral session secret key stored outside the repository in the system temp directory) is recorded prior to remediation. If any tampering, signature mismatch, unauthorized file addition, or deletion is detected, the turn fails closed (`exit code 1`) and pristine reports are restored from backup.
+
+> [!NOTE]
+> **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, read-only file attributes and HMAC signatures provide defense-in-depth against accidental modifications, model drift, and unprivileged overwrites. Absolute adversarial isolation against malicious code execution requires OS-level containerization or process sandboxing.
 
 - **`explorer`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
 - **`documenter`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
 - **`auditor`**: Permitted writes: `.audit/.scratch/`, `.audit/reports/auditor_report.md`, and `.audit/reports/audit_evidence.json`. Forbidden: ANY application code or `README.md`.
-- **`remediator`**: Permitted writes: Application code & manifests. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` OR `.audit/.trusted/` (PHYSICALLY OS-LOCKED, HMAC AUTHENTICATED, AND CRYPTOGRAPHICALLY VERIFIED).**
+- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` OR `.audit/.trusted/` (PHYSICALLY OS-LOCKED, HMAC AUTHENTICATED, AND CRYPTOGRAPHICALLY VERIFIED).**
 
 ---
 
@@ -166,15 +172,15 @@ flowchart TD
 
 ---
 
-## 🛠️ Dynamic Scripting & Verification Gates in `.audit/.scratch/`
+## 🛠️ Canonical Verification Gates & Dynamic Scripting
 
-Instead of relying on rigid, pre-packaged scripts, subagents generate on-demand, targeted inspection scripts in `.audit/.scratch/`. All code analysis uses **static AST parsing (`ast.parse()`) exclusively**—untrusted application code is never executed:
+Verification is executed via the canonical engine (`skills/repo-push/scripts/audit_runner.py`), augmented by on-demand targeted inspection scripts created by the `auditor` in `.audit/.scratch/`. All code analysis uses **static AST parsing (`ast.parse()`) exclusively**—untrusted application code is never executed:
 
-1. **Gate 1: Repository Hygiene:** Validates `README.md` truth, LICENSE presence, `.gitignore` completeness, and clean Git staging.
-2. **Gate 2: AST Code Integrity:** AST inspection for empty function bodies (`pass`, `...`), `raise NotImplementedError`, `// TODO` comments, and silent error swallowers.
-3. **Gate 3: Dependency Parity:** Compares all source code imports against manifest files (`requirements.txt`, `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`).
-4. **Gate 4: Secrets & Commit History:** Scans both active files and reachable commit history (`git log -p`) for API keys, tokens, and tracked credentials.
-5. **Gate 5: Configuration Validation:** Mathematically validates `.repo-push/config.yaml` using JSON Schema.
+1. **Gate 1: Repository Hygiene:** Enforces clean Git working tree (fails on uncommitted or unexpected untracked modifications), validates `README.md` presence, LICENSE presence, and `.gitignore` completeness.
+2. **Gate 2: AST Code Integrity:** AST inspection distinguishing abstract interfaces (`@abstractmethod`, `abc.ABC`, `typing.Protocol`) from incomplete concrete stubs (`pass`, `...`, `raise NotImplementedError`, and `// TODO` markers).
+3. **Gate 3: Multi-Ecosystem Dependencies:** Verifies source code imports against declared manifests for Python (`requirements.txt`, `pyproject.toml`) and Node.js (`package.json`) with canonical alias resolution (`KNOWN_MODULE_MAP`).
+4. **Gate 4: Secrets & Commit History:** Scans tracked files, untracked files outside standard ignores, and reachable commit history (`git log --all -p`) for API keys and credentials, with token masking (`ghp_****`) in reports and fail-safe `NOT_VERIFIED` status reporting.
+5. **Gate 5: Configuration Validation:** Validates `.repo-push/config.yaml` against its JSON Schema with target name uniqueness, Git URL regexes, and path traversal rejection.
 6. **Gate 6: Actions Cross-Validation:** Enforces that every platform referenced in `actions.yaml` is actively defined in `config.yaml` (`ACT-001`).
 
 The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts never pollute the repository.
@@ -201,24 +207,24 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   ├── repo-push.schema.json                  # Schema for config.yaml
 │   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
-├── tests/                                     # Automated test suite (21 unit & integration tests)
-│   ├── test_isolation.py                      # Fail-closed behavioral isolation tests
-│   ├── test_config_validator.py               # Schema and URL cross-validation tests
+├── tests/                                     # Automated test suite (28 unit & integration tests across 6 modules)
+│   ├── test_isolation.py                      # Fail-closed behavioral isolation & HMAC tests
+│   ├── test_config_validator.py               # Schema, duplicate target, and path traversal tests
 │   ├── test_config_generator.py               # Deterministic config generator tests
 │   ├── test_schema_validation.py              # JSON Schema syntax tests
-│   ├── test_git_publishing.py                 # Isolated worktree publishing tests
+│   ├── test_git_publishing.py                 # Isolated worktree publishing & atomic lock tests
 │   └── test_audit_runner.py                   # 6-Gate verification & AST/secret masking tests
 │
 ├── skills/
 │   └── repo-push/
 │       ├── SKILL.md                           # Master multi-agent orchestrator runbook
 │       │
-│       ├── scripts/                           # Deterministic zero-dependency tooling
+│       ├── scripts/                           # Production-grade verification & publishing tooling
 │       │   ├── generate_config.py             # Deterministic remote & platform discovery
-│       │   ├── validate_config.py             # Zero-dependency YAML validator & cross-referencer
-│       │   ├── enforce_isolation.py           # OS file locking & SHA-256 tamper verification
-│       │   ├── git_publisher.py               # Isolated git worktree publisher with concurrency lock
-│       │   └── audit_runner.py                # 6-Gate evidence-based verification engine
+│       │   ├── validate_config.py             # PyYAML & JSON Schema validator & cross-referencer
+│       │   ├── enforce_isolation.py           # Fail-closed OS file locking, HMAC authentication & rollback
+│       │   ├── git_publisher.py               # Isolated Git worktree publisher with atomic concurrency lock
+│       │   └── audit_runner.py                # 6-Gate canonical evidence-based verification engine
 │       │
 │       ├── schemas/                           # Bundled JSON schemas
 │       │   ├── repo-push.schema.json
