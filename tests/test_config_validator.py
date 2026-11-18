@@ -97,5 +97,17 @@ class TestConfigValidator(unittest.TestCase):
                 temp_cfg.unlink()
 
 
+    def test_missing_schema_fails_closed(self):
+        """Missing or unavailable JSON Schema must fail closed."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("validate_config", SCRIPT)
+        val_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(val_mod)
+        validator = val_mod.ConfigValidator(repo_root=Path(__file__).parent)
+        # Attempt to validate against a non-existent schema
+        valid = validator.validate_schema({"version": "1.0"}, "non_existent.schema.json", "Test")
+        self.assertFalse(valid, "Missing schema must fail closed and return False")
+
+
 if __name__ == "__main__":
     unittest.main()

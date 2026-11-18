@@ -33,7 +33,7 @@ DEFAULT_TRUSTED_DIR = os.path.abspath(os.path.join(".audit", ".trusted"))
 def get_session_hmac_key(repo_root=None):
     """
     Retrieves or generates an ephemeral HMAC secret key stored outside the repository
-    in the system temporary directory (inaccessible to ordinary agent workspace edits).
+    in the system temporary directory. Used for cryptographic tamper-detection of reports.
     """
     env_key = os.environ.get("REPO_PUSH_HMAC_KEY")
     if env_key:
@@ -45,7 +45,9 @@ def get_session_hmac_key(repo_root=None):
 
     if key_file.exists():
         try:
-            return key_file.read_bytes().strip()
+            raw_key = key_file.read_bytes()
+            if len(raw_key) >= 32:
+                return raw_key[:32]
         except Exception:
             pass
 
@@ -193,10 +195,72 @@ class IsolationManager:
         print(f"[ISOLATION] Unlocked '{self.reports_dir}' and '{self.trusted_dir}' for execution.")
         return 0
 
-    def restore_reports(self):
-        """Restores pristine reports from backup_dir if tampering occurred."""
+    def verify_backup_integrity(self, expected_manifest):
+        """Verifies that the backup directory matches the authenticated manifest before restoring."""
+        if not os.path.exists(self.backup_dir):
+            return False, f"Backup directory '{self.backup_dir}' not found."
+
+        backup_files = set()
+        for root, dirs, files in os.walk(self.backup_dir, followlinks=False):
+            for d in dirs:
+                dir_path = os.path.join(root, d)
+                if os.path.islink(dir_path):
+                    return False, f"Symlink directory in backup: {dir_path}"
+            for file in files:
+                full_path = os.path.join(root, file)
+                if os.path.islink(full_path):
+                    return False, f"Symlink file in backup: {full_path}"
+                rel_path = os.path.relpath(full_path, self.backup_dir).replace("\\", "/")
+                backup_files.add(rel_path)
+                expected_entry = expected_manifest.get(rel_path)
+                if not expected_entry:
+                    return False, f"Unauthorized file in backup: {rel_path}"
+                actual_hash = hash_file(full_path)
+                actual_size = os.path.getsize(full_path)
+                if actual_hash != expected_entry.get("sha256"):
+                    return False, f"Hash mismatch in backup file '{rel_path}'"
+                if expected_entry.get("size") is not None and actual_size != expected_entry.get("size"):
+                    return False, f"Size mismatch in backup file '{rel_path}'"
+
+        for expected_file in expected_manifest:
+            if expected_file not in backup_files:
+                return False, f"Missing file in backup: {expected_file}"
+
+        return True, "Backup verified pristine against authenticated manifest."
+
+    def restore_reports(self, authenticated_manifest=None):
+        """
+        Restores pristine reports from backup_dir after independently verifying
+        that every backup file matches the HMAC-authenticated manifest.
+        """
         if not os.path.exists(self.backup_dir):
             print(f"[ISOLATION ERROR] Cannot restore: Backup directory '{self.backup_dir}' not found.", file=sys.stderr)
+            return False
+
+        # Load and authenticate manifest if not passed in
+        if authenticated_manifest is None:
+            if not os.path.exists(self.snapshot_file):
+                print(f"[ISOLATION ERROR] Cannot restore: Missing snapshot file '{self.snapshot_file}'.", file=sys.stderr)
+                return False
+            try:
+                with open(self.snapshot_file, "r", encoding="utf-8") as f:
+                    snapshot_data = json.load(f)
+                files_manifest = snapshot_data.get("files")
+                stored_sig = snapshot_data.get("hmac_sha256")
+                manifest_payload = json.dumps(files_manifest, sort_keys=True)
+                expected_sig = hmac.new(self.hmac_key, manifest_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(stored_sig, expected_sig):
+                    print("[SECURITY BREACH] Cannot restore: Manifest signature verification failed!", file=sys.stderr)
+                    return False
+                authenticated_manifest = files_manifest
+            except Exception as e:
+                print(f"[ISOLATION ERROR] Cannot restore: Error reading/authenticating manifest: {e}", file=sys.stderr)
+                return False
+
+        # Verify backup files match authenticated manifest
+        is_valid, msg = self.verify_backup_integrity(authenticated_manifest)
+        if not is_valid:
+            print(f"[SECURITY BREACH] Cannot restore: Backup verification failed ({msg})! Restoration aborted.", file=sys.stderr)
             return False
 
         if self.unlock_reports() != 0:
@@ -206,7 +270,7 @@ class IsolationManager:
         if os.path.exists(self.reports_dir):
             shutil.rmtree(self.reports_dir)
         shutil.copytree(self.backup_dir, self.reports_dir)
-        print(f"[ISOLATION RESTORED] Pristine audit reports restored from trusted backup '{self.backup_dir}'.")
+        print(f"[ISOLATION RESTORED] Verified pristine audit reports restored from trusted backup '{self.backup_dir}'.")
         return True
 
     def verify_reports(self, auto_restore=False):
@@ -298,7 +362,7 @@ class IsolationManager:
 
             if auto_restore:
                 print("[ISOLATION] Auto-restore enabled: attempting rollback to trusted backup...", file=sys.stderr)
-                if self.restore_reports():
+                if self.restore_reports(authenticated_manifest=files_manifest):
                     print("[ISOLATION] Rollback succeeded, but turn is marked as BREACH due to unauthorized edit attempt.", file=sys.stderr)
             return 1
 

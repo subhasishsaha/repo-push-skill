@@ -24,36 +24,13 @@ import uuid
 DEFAULT_LOCK_FILE = os.path.abspath(os.path.join(".audit", ".trusted", "publishing.lock"))
 
 
-def _is_pid_alive(pid: int) -> bool:
-    """Checks whether a process with the given PID is actively running."""
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            SYNCHRONIZE = 0x00100000
-            process = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if process:
-                kernel32.CloseHandle(process)
-                return True
-            err = kernel32.GetLastError()
-            # ERROR_ACCESS_DENIED (5) means the process exists but lacks SYNCHRONIZE rights
-            if err == 5:
-                return True
-            return False
-        except Exception:
-            return True  # Fail-safe: assume running
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError as e:
-            return e.errno == 1  # EPERM means process exists
-
-
 class PublishingLock:
-    """Atomic mutual exclusion lock for publishing operations."""
+    """
+    OS-level kernel file lock for publishing operations.
+    Uses msvcrt.locking on Windows and fcntl.flock on Unix.
+    Provides true race-free concurrency: kernel automatically releases lock
+    if the process terminates, crashes, or is killed.
+    """
     def __init__(self, lock_file=DEFAULT_LOCK_FILE):
         self.lock_file = lock_file
         self.fd = None
@@ -61,35 +38,60 @@ class PublishingLock:
     def __enter__(self):
         os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
         try:
-            # Atomic exclusive file creation
-            self.fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(self.fd, f"{os.getpid()}\n".encode("utf-8"))
-        except FileExistsError:
-            # Check for stale lock
-            stale = False
+            # Open or create lock file
+            self.fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+            if os.name == "nt":
+                import msvcrt
+                try:
+                    msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    os.close(self.fd)
+                    self.fd = None
+                    raise RuntimeError(f"Concurrent publishing operation detected (Lock held at '{self.lock_file}'). Aborting.")
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (BlockingIOError, OSError):
+                    os.close(self.fd)
+                    self.fd = None
+                    raise RuntimeError(f"Concurrent publishing operation detected (Lock held at '{self.lock_file}'). Aborting.")
+
+            # Record active PID for diagnostic observability
             try:
-                with open(self.lock_file, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                pid = int(content) if content.isdigit() else None
-                if pid and not _is_pid_alive(pid):
-                    stale = True
+                os.ftruncate(self.fd, 0)
+                os.lseek(self.fd, 0, os.SEEK_SET)
+                os.write(self.fd, f"{os.getpid()}\n".encode("utf-8"))
             except Exception:
                 pass
-
-            if stale:
+            return self
+        except RuntimeError:
+            raise
+        except Exception as e:
+            if self.fd is not None:
                 try:
-                    os.remove(self.lock_file)
-                    self.fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    os.write(self.fd, f"{os.getpid()}\n".encode("utf-8"))
-                    return self
+                    os.close(self.fd)
                 except Exception:
                     pass
-            raise RuntimeError(f"Concurrent publishing operation detected (Lock held at '{self.lock_file}'). Aborting.")
-        return self
+                self.fd = None
+            raise RuntimeError(f"Failed to acquire publishing lock at '{self.lock_file}': {e}")
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.fd is not None:
             try:
+                if os.name == "nt":
+                    import msvcrt
+                    try:
+                        os.lseek(self.fd, 0, os.SEEK_SET)
+                        msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+                    except Exception:
+                        pass
+                else:
+                    import fcntl
+                    try:
+                        fcntl.flock(self.fd, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
                 os.close(self.fd)
             except Exception:
                 pass

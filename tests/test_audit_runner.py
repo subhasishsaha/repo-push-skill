@@ -107,7 +107,7 @@ def calculate_tax():
         """Gate 4 must inspect untracked files outside standard ignores."""
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            dummy_pat = "ghp_" + "1234567890abcdef" * 2
+            dummy_pat = "ghp_" + "9876543210fedcba" * 2
             (repo / "untracked_script.py").write_text(f'API_KEY = "{dummy_pat}"', encoding="utf-8")
             runner = AuditRunner(repo)
             gate = runner.run_gate_4_secrets()

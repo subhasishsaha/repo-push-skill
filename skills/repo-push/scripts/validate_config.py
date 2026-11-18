@@ -20,37 +20,30 @@ import re
 import sys
 from pathlib import Path
 
-# Optional libraries for production-grade validation
+# Mandatory dependencies for schema-compliant configuration validation
 try:
     import yaml
-    HAS_YAML = True
 except ImportError:
-    HAS_YAML = False
+    print("[FATAL ERROR] Mandatory dependency 'PyYAML' is not installed. Install via `pip install -r requirements.txt`.", file=sys.stderr)
+    sys.exit(1)
 
 try:
     import jsonschema
-    HAS_JSONSCHEMA = True
 except ImportError:
-    HAS_JSONSCHEMA = False
+    print("[FATAL ERROR] Mandatory dependency 'jsonschema' is not installed. Install via `pip install -r requirements.txt`.", file=sys.stderr)
+    sys.exit(1)
 
 VALID_PLATFORMS = {"github", "gitlab", "huggingface", "bitbucket", "generic"}
 GIT_URL_REGEX = re.compile(r'^(https?://|git@|ssh://)[a-zA-Z0-9_\.\-]+([:/][a-zA-Z0-9_\.\-]+)+/?(\.git)?$')
 
 
 def load_yaml(content: str):
-    """Parses YAML using PyYAML safe_load if available, or structured fallback."""
-    if HAS_YAML:
-        return yaml.safe_load(content)
-
-    # Minimal JSON/YAML fallback for basic key-value structures
-    try:
-        return json.loads(content)
-    except Exception:
-        raise RuntimeError("PyYAML ('yaml') is required to parse complex YAML configurations with comments and nested objects.")
+    """Parses YAML strictly using PyYAML safe_load."""
+    return yaml.safe_load(content)
 
 
 def load_schema(schema_filename: str, repo_root: Path):
-    """Loads schema from schemas/ or skills/repo-push/schemas/."""
+    """Loads schema from schemas/ or skills/repo-push/schemas/. Fails closed if missing."""
     candidates = [
         repo_root / "schemas" / schema_filename,
         repo_root / "skills" / "repo-push" / "schemas" / schema_filename,
@@ -69,26 +62,19 @@ class ConfigValidator:
         self.repo_root = (repo_root or Path.cwd()).resolve()
 
     def validate_schema(self, data: dict, schema_filename: str, label: str):
-        """Validates dict against JSON Schema using jsonschema library."""
+        """Validates dict against JSON Schema strictly. Fails closed if schema missing or invalid."""
         schema = load_schema(schema_filename, self.repo_root)
         if not schema:
-            print(f"[WARN] Schema '{schema_filename}' not found. Skipping JSON Schema syntax validation.")
-            return True
+            print(f"[SCHEMA ERROR] Mandatory schema '{schema_filename}' not found in schemas/ or skills/repo-push/schemas/. Validation failed closed.", file=sys.stderr)
+            return False
 
-        if HAS_JSONSCHEMA:
-            try:
-                jsonschema.validate(instance=data, schema=schema)
-                return True
-            except jsonschema.ValidationError as e:
-                path_str = " -> ".join(str(p) for p in e.path) if e.path else "root"
-                print(f"[SCHEMA ERROR] {label} schema violation at '{path_str}': {e.message}", file=sys.stderr)
-                return False
-        else:
-            # Basic fallback validation if jsonschema not installed
-            if not isinstance(data, dict):
-                print(f"[SCHEMA ERROR] {label} must be a dictionary/mapping.", file=sys.stderr)
-                return False
+        try:
+            jsonschema.validate(instance=data, schema=schema)
             return True
+        except jsonschema.ValidationError as e:
+            path_str = " -> ".join(str(p) for p in e.path) if e.path else "root"
+            print(f"[SCHEMA ERROR] {label} schema violation at '{path_str}': {e.message}", file=sys.stderr)
+            return False
 
     def validate_config_data(self, config_data: dict) -> tuple:
         """Validates config.yaml structure, business rules, and target constraints."""

@@ -131,6 +131,24 @@ class TestIsolation(unittest.TestCase):
         self.assertEqual(test_file.read_text(encoding="utf-8"), "# Original Auditor Findings")
         self.assertFalse(injected.exists())
 
+    def test_tampered_backup_aborts_restoration(self):
+        """If files inside the backup directory are tampered with, restoration must abort."""
+        test_file = self.reports_dir / "auditor_report.md"
+        test_file.write_text("# Original Auditor Findings", encoding="utf-8")
+
+        res_lock = run_isolation("lock", self.reports_dir, self.trusted_dir)
+        self.assertEqual(res_lock.returncode, 0)
+
+        # Unlock and tamper with the backup directory
+        run_isolation("unlock", self.reports_dir, self.trusted_dir)
+        backup_file = self.trusted_dir / "reports_backup" / "auditor_report.md"
+        backup_file.write_text("# Corrupted Backup Content", encoding="utf-8")
+
+        # Now try to restore
+        res_restore = run_isolation("restore", self.reports_dir, self.trusted_dir)
+        self.assertNotEqual(res_restore.returncode, 0)
+        self.assertIn("Backup verification failed", res_restore.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

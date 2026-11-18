@@ -121,7 +121,7 @@ actions:
 
 - **Deterministic Remote Setup:** When you already have configured remotes, `repo-push` generates `config.yaml` deterministically from `git remote -v`, resolving active branches and targets for user verification before publishing.
 - **Strict Cross-Validation (`ACT-001`):** Prevents dead code by ensuring every platform referenced in `actions.yaml` is actively defined in `config.yaml`.
-- **Isolated Worktree Publishing:** Exclusion filtering executes inside isolated Git worktrees (`git worktree add`)—your active branch (`main`) and working copy files remain untouched. Temporary worktrees and release branches are managed with structured `try ... finally` cleanup (with visible warnings if manual cleanup is needed after unexpected process aborts).
+- **Isolated Worktree Publishing:** Publishing does not switch the user's active branch or modify application source files. Temporary worktree files and Git worktree metadata are managed separately under `.audit/.scratch/worktrees/` with structured `try ... finally` cleanup (with visible warnings if manual cleanup is needed after unexpected process aborts).
 - **Two Distinct Publishing Modes:**
   - `history_preserving` (default): Publishes a new release commit with exclusions applied, while retaining full prior commit ancestry.
   - `clean_snapshot`: Publishes a single orphan commit with zero prior ancestry. Forbids `--tags` to prevent leaking excluded files or history through existing Git tags.
@@ -133,16 +133,16 @@ actions:
 To prevent subagents from overstepping their scope—such as a prompt-injected **`remediator` modifying `auditor`'s report** instead of fixing application code—`repo-push` enforces a **3-Layer Defense-in-Depth Model**:
 
 1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
-2. **Layer 2 (OS File-Lock Barrier):** `.audit/reports/` and `.audit/.trusted/` are locked with OS read-only attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (HMAC Authentication & Fail-Closed Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 (using an ephemeral session secret key stored outside the repository in the system temp directory) is recorded prior to remediation. If any tampering, signature mismatch, unauthorized file addition, or deletion is detected, the turn fails closed (`exit code 1`) and pristine reports are restored from backup.
+2. **Layer 2 (OS Read-Only Permission Barrier):** `.audit/reports/` and `.audit/.trusted/` are marked read-only using filesystem attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
+3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 (using an ephemeral session secret key stored in the system temp directory) is recorded prior to remediation. If tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup contents are independently verified against the authenticated manifest.
 
 > [!NOTE]
-> **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, read-only file attributes and HMAC signatures provide defense-in-depth against accidental modifications, model drift, and unprivileged overwrites. Absolute adversarial isolation against malicious code execution requires OS-level containerization or process sandboxing.
+> **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, filesystem permission attributes and HMAC signatures provide tamper-detection and guardrails against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account.
 
 - **`explorer`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
 - **`documenter`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
 - **`auditor`**: Permitted writes: `.audit/.scratch/`, `.audit/reports/auditor_report.md`, and `.audit/reports/audit_evidence.json`. Forbidden: ANY application code or `README.md`.
-- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` OR `.audit/.trusted/` (PHYSICALLY OS-LOCKED, HMAC AUTHENTICATED, AND CRYPTOGRAPHICALLY VERIFIED).**
+- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: Forbidden from modifying `.audit/reports/` or `.audit/.trusted/` (protected by OS read-only attributes, HMAC tamper detection, and verified manifest rollback).**
 
 ---
 
@@ -178,9 +178,9 @@ Verification is executed via the canonical engine (`skills/repo-push/scripts/aud
 
 1. **Gate 1: Repository Hygiene:** Enforces clean Git working tree (fails on uncommitted or unexpected untracked modifications), validates `README.md` presence, LICENSE presence, and `.gitignore` completeness.
 2. **Gate 2: AST Code Integrity:** AST inspection distinguishing abstract interfaces (`@abstractmethod`, `abc.ABC`, `typing.Protocol`) from incomplete concrete stubs (`pass`, `...`, `raise NotImplementedError`, and `// TODO` markers).
-3. **Gate 3: Multi-Ecosystem Dependencies:** Verifies source code imports against declared manifests for Python (`requirements.txt`, `pyproject.toml`) and Node.js (`package.json`) with canonical alias resolution (`KNOWN_MODULE_MAP`).
-4. **Gate 4: Secrets & Commit History:** Scans tracked files, untracked files outside standard ignores, and reachable commit history (`git log --all -p`) for API keys and credentials, with token masking (`ghp_****`) in reports and fail-safe `NOT_VERIFIED` status reporting.
-5. **Gate 5: Configuration Validation:** Validates `.repo-push/config.yaml` against its JSON Schema with target name uniqueness, Git URL regexes, and path traversal rejection.
+3. **Gate 3: Static Dependency Consistency Analysis:** Verifies static source code imports against declared manifests for Python (`requirements.txt`, `pyproject.toml`) and Node.js (`package.json`) with canonical alias resolution (`KNOWN_MODULE_MAP`). Dynamic imports, optional dependencies, and platform-specific groups are outside static scope.
+4. **Gate 4: Secrets & Commit History:** Scans tracked files, untracked files outside standard ignores, and locally available reachable Git history (`git log --all -p`) for API keys and credentials, with token masking (`ghp_****`) in reports and fail-safe `NOT_VERIFIED` status reporting.
+5. **Gate 5: Configuration Validation:** Validates `.repo-push/config.yaml` against its JSON Schema with target name uniqueness, Git URL regexes, and path traversal rejection. Fails closed if dependencies or schema files are missing.
 6. **Gate 6: Actions Cross-Validation:** Enforces that every platform referenced in `actions.yaml` is actively defined in `config.yaml` (`ACT-001`).
 
 The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts never pollute the repository.

@@ -536,10 +536,12 @@ class AuditRunner:
                     )
                     break
 
-        # 2. Check file contents for tokens and developer paths
+        DUMMY_ALLOWLIST = ["example", "dummy", "placeholder", "xxx", "fake", "test", "mock", "1234567890abcdef"]
+
+        # 2. Check file contents for tokens and developer paths (including tests/)
         for tf in scannable_files:
             rel = str(tf.relative_to(self.repo_root)).replace("\\", "/")
-            if any(p in rel for p in [".audit/", ".memory/", "tests/"]):
+            if any(p in rel for p in [".audit/", ".memory/"]):
                 continue
             try:
                 content = tf.read_text(encoding="utf-8", errors="replace")
@@ -552,7 +554,7 @@ class AuditRunner:
                 for pat, label in SECRET_PATTERNS:
                     for m in pat.finditer(line):
                         token_str = m.group(0)
-                        if any(x in token_str.lower() for x in ["example", "dummy", "placeholder", "xxx"]):
+                        if any(x in token_str.lower() for x in DUMMY_ALLOWLIST):
                             continue
                         if "re.compile" in line or "AKIA[0-9A-Z]" in line:
                             continue
@@ -585,12 +587,12 @@ class AuditRunner:
                         "Replace hardcoded IP with environment variable or configurable parameter."
                     )
 
-        # 3. Check reachable git history using git log --all -p (Never swallow exceptions)
+        # 3. Check reachable git history across all commits and branches (Never swallow exceptions)
         history_scanned = False
         if (self.repo_root / ".git").exists():
             try:
                 log_out = subprocess.check_output(
-                    ["git", "log", "--all", "-p", "--", ".", ":(exclude)tests"],
+                    ["git", "log", "--all", "-p", "--", "."],
                     cwd=self.repo_root,
                     text=True,
                     errors="replace"
@@ -599,7 +601,7 @@ class AuditRunner:
                 for pat, label in SECRET_PATTERNS:
                     for m in pat.finditer(log_out):
                         token_str = m.group(0)
-                        if any(x in token_str.lower() for x in ["example", "dummy", "placeholder", "xxx"]):
+                        if any(x in token_str.lower() for x in DUMMY_ALLOWLIST):
                             continue
                         if "re.compile" in token_str:
                             continue

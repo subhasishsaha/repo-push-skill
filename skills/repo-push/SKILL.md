@@ -41,7 +41,7 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
    - A security violation is recorded in the audit log.
    Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
 
-> **Honesty & Boundary Notice**: OS file locking (`attrib` / `chmod`) provides defense-in-depth against standard agent tool writes. Hard tamper-resistance is enforced by HMAC-SHA256 manifest authentication and automated rollback from isolated backups.
+> **Honesty & Boundary Notice**: Filesystem permission attributes (`attrib` / `chmod`) provide defense-in-depth against accidental modifications and model drift. Tamper detection is enforced by HMAC-SHA256 manifest authentication with independent backup verification before rollback. Genuine adversarial isolation against same-user malicious code execution requires OS-level containerization.
 
 ---
 

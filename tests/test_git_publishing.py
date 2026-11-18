@@ -68,14 +68,13 @@ class TestGitPublishingIntegration(unittest.TestCase):
             lock_dir.mkdir(parents=True, exist_ok=True)
             lock_file = lock_dir / "publishing.lock"
             
-            # Create active lock with current PID
-            lock_file.write_text(f"{subprocess.os.getpid()}\n", encoding="utf-8")
-
-            # Try to run publisher with this lock file
-            with self.assertRaises(RuntimeError) as ctx:
-                with PublishingLock(lock_file=str(lock_file)):
-                    pass
-            self.assertIn("Concurrent publishing operation detected", str(ctx.exception))
+            # First process acquires lock
+            with PublishingLock(lock_file=str(lock_file)):
+                # Second concurrent process must be rejected
+                with self.assertRaises(RuntimeError) as ctx:
+                    with PublishingLock(lock_file=str(lock_file)):
+                        pass
+                self.assertIn("Concurrent publishing operation detected", str(ctx.exception))
 
     def test_end_to_end_history_preserving_publishing(self):
         """Full integration test: publish to local bare remote with exclusions in history_preserving mode."""
