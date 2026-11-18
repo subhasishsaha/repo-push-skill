@@ -62,3 +62,7 @@ scratch/
 *.dump
 core
 core.*
+
+# Agent audit & workspace directives
+.audit/
+AGENTS.md

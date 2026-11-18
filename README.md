@@ -65,7 +65,6 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 
 ```text
 ├── plugin.json                                # Plugin manifest for Antigravity & Agent ecosystems
-├── AGENTS.md                                  # Universal root instructions for AI agents
 ├── README.md                                  # Repository overview and documentation
 ├── LICENSE                                    # Apache-2.0 license
 ├── .gitignore                                 # Clean gitignore configuration
@@ -107,7 +106,7 @@ This skill operates seamlessly across any agent harness:
 | **Windsurf** | Project rule | Mention skill workflow in `.windsurfrules` |
 | **GitHub Copilot** | Repository instructions | Reference in `.github/copilot-instructions.md` |
 | **Antigravity / Gemini** | Plugin or workspace skill | Mount `plugin.json` or place in `.agents/skills/` |
-| **Cline / Roo Code** | Custom instructions | Add `AGENTS.md` to system prompt / project memory |
+| **Cline / Roo Code** | Custom instructions | Point to `skills/repo-push/SKILL.md` in custom instructions |
 | **Aider** | Command / instructions | Pass `skills/repo-push/SKILL.md` to `/read` or `.aider.conf.yml` |
 | **Custom Agent / Swarms** | System prompt / Tool calling | Point LLM to `SKILL.md` and equip standard shell & file tools |
 

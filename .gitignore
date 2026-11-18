@@ -27,7 +27,6 @@ tmp/
 .agents/
 .memory/
 
-# Audit outputs
-.audit/*
-!.audit/reports/
-!.audit/reports/**
+# Audit outputs & Local Agent Directives
+.audit/
+AGENTS.md
