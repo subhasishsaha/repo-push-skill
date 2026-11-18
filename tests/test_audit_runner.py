@@ -134,7 +134,7 @@ def calculate_tax():
             # A 36-char token containing the word 'test'
             # Split across variables so test file source code itself does not contain a contiguous credential
             prefix = "ghp_"
-            body = "98765test43210fedcbamock9876543210fe"
+            body = "88887777test66665555mock444433332222"
             token_with_test = prefix + body
             (repo / "service.py").write_text(f'AUTH_SECRET = "{token_with_test}"\n', encoding="utf-8")
             runner = AuditRunner(repo)

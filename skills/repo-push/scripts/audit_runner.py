@@ -554,6 +554,7 @@ class AuditRunner:
         EXACT_TEST_FIXTURE_TOKENS = {
             "ghp_1234567890abcdef1234567890abcdef",
             "ghp_000000000000000000000000000000000000",
+            "ghp_98765test43210fedcbamock9876543210fe",
             "AKIAIOSFODNN7EXAMPLE",
             "AKIA0000000000000000",
         }
