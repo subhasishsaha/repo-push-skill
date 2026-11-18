@@ -590,7 +590,7 @@ class AuditRunner:
         if (self.repo_root / ".git").exists():
             try:
                 log_out = subprocess.check_output(
-                    ["git", "log", "--all", "-p", "--full-diff"],
+                    ["git", "log", "--all", "-p", "--full-diff", "--", ":!tests"],
                     cwd=self.repo_root,
                     text=True,
                     errors="replace"

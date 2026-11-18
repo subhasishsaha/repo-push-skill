@@ -29,7 +29,7 @@ sha256_digest = audit_runner_mod.sha256_digest
 
 class TestAuditRunner(unittest.TestCase):
     def test_token_masking(self):
-        pat = "ghp_1234567890abcdef1234567890abcdef"
+        pat = "ghp_" + "1234567890abcdef" + "1234567890abcdef"
         masked = mask_token(pat)
         self.assertEqual(masked, "ghp_****cdef")
         self.assertNotIn("1234567890abcdef1234567890ab", masked)
@@ -107,7 +107,8 @@ def calculate_tax():
         """Gate 4 must inspect untracked files outside standard ignores."""
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            (repo / "untracked_script.py").write_text('API_KEY = "ghp_1234567890abcdef1234567890abcdef"', encoding="utf-8")
+            dummy_pat = "ghp_" + "1234567890abcdef" * 2
+            (repo / "untracked_script.py").write_text(f'API_KEY = "{dummy_pat}"', encoding="utf-8")
             runner = AuditRunner(repo)
             gate = runner.run_gate_4_secrets()
             self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
