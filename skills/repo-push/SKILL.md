@@ -105,10 +105,67 @@ The Orchestrator defines and spawns each subagent by injecting its explicit boun
 
 ---
 
+## 📋 The `.repo-push.yaml` Publishing Specification Standard
+
+Projects configure their target remotes, exclusion filters, and push behavior in `.repo-push.yaml` at repository root:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push.schema.json
+version: "1.0"
+require_confirmation: true
+
+pre_push:
+  min_readiness_score: 100     # 100/100 required to unlock push
+  dry_run: true                # Test auth & branch before actual push
+
+targets:
+  - name: origin
+    platform: github           # github | gitlab | huggingface | bitbucket | generic
+    url: https://github.com/username/project.git
+    branch: main
+    push_tags: true
+    exclude:                   # Never send platform clutter across remotes
+      - .gitlab-ci.yml
+      - bitbucket-pipelines.yml
+
+  - name: hf-demo
+    platform: huggingface
+    url: https://huggingface.co/spaces/username/project-demo
+    branch: main
+    exclude:
+      - .github/
+      - .gitlab-ci.yml
+      - tests/
+    metadata:
+      title: "Project Demo"
+      sdk: "gradio"            # gradio | streamlit | docker | static
+      app_file: "app.py"
+    lfs_patterns:
+      - "*.safetensors"
+      - "*.bin"
+```
+
+- **IDE Autocomplete & Validation:** Powered by `schemas/repo-push.schema.json`.
+- **Zero-Touch Onboarding:** If `.repo-push.yaml` does not exist, `scripts/generate_config.py` generates it deterministically from `git remote -v`.
+- **Pre-Push Validation:** `scripts/validate_config.py` mathematically verifies the YAML against the schema.
+
+---
+
 ## 🔄 Orchestrator Execution Protocol
 
-### Step 0: Pre-Flight Setup
-Ensure `.audit/reports/` exists. No contract files need to be written to disk in target repositories; all behavioral contracts are injected directly in-memory by the Orchestrator.
+### Step 0: Remote Auto-Discovery & Pre-Flight Setup
+1. Ensure `.audit/reports/` and `.audit/.scratch/` exist.
+2. **Deterministic Configuration Check (`.repo-push.yaml`):**
+   - If `.repo-push.yaml` (or `.repo-push.yml`) is missing in repository root:
+     - Orchestrator executes the bundled generator script:
+       ```bash
+       python <skill>/scripts/generate_config.py
+       ```
+     - The script parses `git remote -v`, detects remote platforms (GitHub, GitLab, Hugging Face, Bitbucket), resolves the active branch, and generates `.repo-push.yaml` with canonical mutual exclusions deterministically (zero hallucinations, zero token cost).
+   - If `.repo-push.yaml` already exists:
+     - Orchestrator executes `python <skill>/scripts/validate_config.py` to mathematically verify the configuration against `schemas/repo-push.schema.json`.
+
+---
 
 ### Phase 1: README Verification Gate
 1. Check if `README.md` exists.
@@ -121,8 +178,16 @@ Ensure `.audit/reports/` exists. No contract files need to be written to disk in
    - Orchestrator injects the in-memory Documenter contract and spawns `documenter`. The `documenter` verifies. If failed, loops back to `explorer` (Max 3 iterations). Once passed, `documenter` drafts `README.md`.
    - Present newly drafted `README.md` to user for explicit confirmation.
 
-### Phase 2: Implementation Integrity Loop
-1. Orchestrator ensures directory `.audit/.scratch/` exists.
+---
+
+### Phase 2: Implementation Integrity Loop & Targeted Scaffolding
+1. **Targeted Platform Scaffolding:**
+   - Inspect active platforms declared in `.repo-push.yaml` `targets`.
+   - **Only scaffold configurations for declared platforms:**
+     - `github`: Ensure `.github/workflows/ci.yml` exists. Never scaffold `.gitlab-ci.yml`.
+     - `gitlab`: Ensure `.gitlab-ci.yml` exists. Never scaffold `.github/`.
+     - `huggingface`: Ensure `README.md` includes required YAML frontmatter (`sdk`, `app_file`, `title`), and ensure any model weights >10MB are configured with `git lfs track`.
+     - `bitbucket`: Ensure `bitbucket-pipelines.yml` exists.
 2. Orchestrator injects the in-memory Auditor contract and invokes `auditor`.
 3. `auditor` writes its inspection scripts into `.audit/.scratch/`, runs them, and outputs `.audit/reports/auditor_report.md`.
 4. Orchestrator reads `.audit/reports/auditor_report.md`.
@@ -132,11 +197,23 @@ Ensure `.audit/reports/` exists. No contract files need to be written to disk in
    - Orchestrator hands control back to `auditor` to re-execute its scratch audit.
    - Loop repeats until 0 blockers remain (Circuit breaker: Max 3 iterations, then escalate to user).
 
-### Phase 3: Final Certification & Ledger
-1. When the `auditor` confirms 0 blockers remain, Orchestrator compiles and writes:
-   ```text
-   .audit/reports/final_report.md
-   ```
-   Adhering to [templates/audit/final_report.template.md](./templates/audit/final_report.template.md).
-2. Orchestrator verifies `git status`.
-3. Orchestrator presents the final certification summary to the user.
+---
+
+### Phase 3: Final Certification & Remote Push Protocol
+1. **Generate Certification Ledger:**
+   - When the `auditor` confirms 0 blockers remain (100/100 score), Orchestrator compiles and writes:
+     ```text
+     .audit/reports/final_report.md
+     ```
+     Adhering to [templates/audit/final_report.template.md](./templates/audit/final_report.template.md).
+2. **Pre-Push Dry-Run & Validation:**
+   - Orchestrator reads `.repo-push.yaml`.
+   - Runs `git push --dry-run` against each target to verify network connectivity, remote credentials, and branch access.
+3. **Explicit User Confirmation Gate (Safety-First):**
+   - If `require_confirmation: true` (default), prompt the user:
+     > *"✅ Codebase certified (100/100). Ready to push to [target(s)]? [Yes / No]"*
+   - Execution pauses until user confirms.
+4. **Platform-Filtered Push Execution:**
+   - For targets with `exclude` patterns, the agent pushes via an ephemeral Git tree / temporary release commit so that platform-specific files never cross-contaminate.
+   - **The developer's local working copy and local `main` branch remain 100% untouched.**
+   - Pushes cleanly to all declared target remotes and reports confirmation.

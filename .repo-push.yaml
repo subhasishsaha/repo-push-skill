@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push.schema.json
+version: "1.0"
+
+require_confirmation: true
+
+pre_push:
+  min_readiness_score: 100
+  dry_run: true
+
+targets:
+  - name: origin
+    platform: github
+    url: https://github.com/subhasishsaha/repo-push-skill.git
+    branch: main
+    push_tags: true
+    exclude:
+      - .gitlab-ci.yml
+      - bitbucket-pipelines.yml

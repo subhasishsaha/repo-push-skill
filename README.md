@@ -36,13 +36,60 @@ Navigate to any codebase you want to prepare for remote publishing:
    /repo-push
    ```
 2. **Or ask your coding agent in natural language:**
-   > *"Run repo-push on this repository to audit, sanitize, and prepare it for GitHub."*
+   > *"Run repo-push on this repository to audit, sanitize, and prepare it for remote publishing."*
    > *"Perform an adversarial pre-push review on this codebase."*
 
-3. **Follow the Autonomous Verification Gates:**
+3. **Autonomous Verification & Remote Publishing Workflow:**
+   - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and generates `.repo-push.yaml` with canonical mutual exclusion rules deterministically (zero user input required).
    - **Phase 1 (README Gate):** The Orchestrator verifies your `README.md` against intended functionality and prompts for confirmation. (If missing, `explorer` and `documenter` collaborate to draft one).
-   - **Phase 2 (Adversarial Loop):** The `auditor` generates and executes on-demand inspection scripts in `.audit/.scratch/` (AST stubs, dependencies, path/IP leaks, doc drift, secrets). The `remediator` fixes all issues in code.
-   - **Phase 3 (Certification & Push):** The Orchestrator produces a 100/100 publication readiness certificate and stages clean Git commits ready for `git push`.
+   - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). The `auditor` executes on-demand inspection scripts in `.audit/.scratch/` (AST stubs, dependencies, path/IP leaks, doc drift, secrets). The `remediator` fixes all issues in code.
+   - **Phase 3 (Certification & Filtered Remote Push):** Upon reaching a **100/100 readiness score**, the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and pushes cleanly using ephemeral Git tree filtering so platform clutter never cross-contaminates.
+
+---
+
+## 📋 Configuration Standard: `.repo-push.yaml`
+
+`repo-push` uses a single, declarative YAML standard placed at the root of your project:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push.schema.json
+version: "1.0"
+require_confirmation: true
+
+pre_push:
+  min_readiness_score: 100     # Require 100/100 score to unlock push
+  dry_run: true                # Run git push --dry-run first
+
+targets:
+  - name: origin
+    platform: github           # github | gitlab | huggingface | bitbucket | generic
+    url: https://github.com/username/project.git
+    branch: main
+    push_tags: true
+    exclude:                   # Never send platform clutter across remotes
+      - .gitlab-ci.yml
+      - bitbucket-pipelines.yml
+
+  - name: hf-demo
+    platform: huggingface
+    url: https://huggingface.co/spaces/username/project-demo
+    branch: main
+    exclude:
+      - .github/
+      - .gitlab-ci.yml
+      - tests/
+    metadata:
+      title: "Project Demo"
+      sdk: "gradio"            # gradio | streamlit | docker | static
+      app_file: "app.py"
+    lfs_patterns:
+      - "*.safetensors"
+      - "*.bin"
+```
+
+- **Zero-Touch Setup:** When you already have a `git remote`, `repo-push` generates this file automatically.
+- **IDE Autocomplete & Validation:** Built-in JSON Schema provides instant autocomplete and error highlighting in VS Code, Cursor, and Windsurf.
+- **Pristine Local Branches:** Exclusion filtering happens via ephemeral Git release trees—your local working copy and local `main` branch stay 100% untouched.
 
 ---
 
