@@ -9,53 +9,21 @@ The primary coordinator acts as the **Orchestrator**, actively spawning and mana
 
 ---
 
-## 📦 Installation
+## 📦 Installation & Setup
 
-`repo-push` can be installed globally for all projects or added locally to a specific workspace.
+Installing `repo-push` into your AI agent is simple:
 
-### Option 1: Global Installation (Recommended)
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/subhasishsaha/repo-push-skill.git
+   ```
 
-Install once to make `/repo-push` available across all your repositories:
+2. **Open the repository in your AI agent** (Antigravity, Claude Code, Cursor, Windsurf, etc.).
 
-#### 🤖 Antigravity / Gemini CLI
-```bash
-# Linux / macOS
-git clone https://github.com/subhasishsaha/repo-push-skill.git /tmp/repo-push-skill \
-  && mkdir -p ~/.gemini/config/skills \
-  && cp -r /tmp/repo-push-skill/skills/repo-push ~/.gemini/config/skills/ \
-  && rm -rf /tmp/repo-push-skill
-```
+3. **Ask your agent to install it globally:**
+   > *"Install this skill in my global skills directory."*
 
-```powershell
-# Windows (PowerShell)
-git clone https://github.com/subhasishsaha/repo-push-skill.git "$env:TEMP\repo-push-skill"
-New-Item -ItemType Directory -Force -Path "$HOME\.gemini\config\skills"
-Copy-Item -Recurse -Force "$env:TEMP\repo-push-skill\skills\repo-push" "$HOME\.gemini\config\skills\"
-Remove-Item -Recurse -Force "$env:TEMP\repo-push-skill"
-```
-
-#### 🟣 Claude Code
-```bash
-# Install to personal skills directory
-mkdir -p ~/.claude/skills
-git clone https://github.com/subhasishsaha/repo-push-skill.git /tmp/repo-push-skill \
-  && cp -r /tmp/repo-push-skill/skills/repo-push ~/.claude/skills/ \
-  && rm -rf /tmp/repo-push-skill
-```
-
----
-
-### Option 2: Project-Level Installation
-
-To install `repo-push` directly into a single project workspace:
-
-```bash
-# In your target project root:
-mkdir -p .agents/skills
-git clone https://github.com/subhasishsaha/repo-push-skill.git /tmp/repo-push-skill \
-  && cp -r /tmp/repo-push-skill/skills/repo-push .agents/skills/ \
-  && rm -rf /tmp/repo-push-skill
-```
+Your agent will automatically detect your environment, copy `skills/repo-push` to your global configuration (e.g. `~/.gemini/config/skills/repo-push/` or `~/.claude/skills/repo-push/`), and make it available across all your projects.
 
 ---
 
