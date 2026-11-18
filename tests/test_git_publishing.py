@@ -40,6 +40,22 @@ class TestGitPublishingIntegration(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("does not exist", res.stderr)
 
+    def test_git_url_normalization_matches_with_or_without_dot_git(self):
+        """Remote validation must treat URLs with and without trailing .git or slashes as identical."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("git_publisher", SCRIPT)
+        pub_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pub_mod)
+        normalize = pub_mod.normalize_git_url
+
+        url1 = "https://github.com/subhasishsaha/repo-push-skill.git"
+        url2 = "https://github.com/subhasishsaha/repo-push-skill"
+        url3 = "https://github.com/subhasishsaha/repo-push-skill/"
+        self.assertEqual(normalize(url1), "https://github.com/subhasishsaha/repo-push-skill")
+        self.assertEqual(normalize(url2), "https://github.com/subhasishsaha/repo-push-skill")
+        self.assertEqual(normalize(url3), "https://github.com/subhasishsaha/repo-push-skill")
+        self.assertEqual(normalize(url1), normalize(url2))
+
     def test_remote_url_mismatch_rejected(self):
         """Push URL mismatch with declared target must be rejected."""
         with tempfile.TemporaryDirectory() as td:

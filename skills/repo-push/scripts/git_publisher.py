@@ -139,6 +139,19 @@ def resolve_expected_url_from_config(remote_name, cwd=None):
     return None
 
 
+def normalize_git_url(url):
+    """
+    Normalizes a Git remote URL for comparison by stripping trailing slashes
+    and removing trailing '.git' suffix.
+    """
+    if not url:
+        return ""
+    u = url.strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4].rstrip("/")
+    return u
+
+
 def validate_remote(remote_name, expected_url=None, cwd=None):
     """
     Verifies that the remote exists and checks that configured remote push URLs
@@ -153,6 +166,7 @@ def validate_remote(remote_name, expected_url=None, cwd=None):
         expected_url = resolve_expected_url_from_config(remote_name, cwd=cwd)
 
     if expected_url:
+        norm_expected = normalize_git_url(expected_url)
         # Check all push URLs configured for this remote
         url_res = git_cmd(["remote", "get-url", "--push", "--all", remote_name], cwd=cwd, check=False)
         actual_urls = [u.strip() for u in url_res.stdout.splitlines() if u.strip()]
@@ -162,7 +176,7 @@ def validate_remote(remote_name, expected_url=None, cwd=None):
             actual_urls = [u.strip() for u in u_fallback.stdout.splitlines() if u.strip()]
 
         for actual_url in actual_urls:
-            if actual_url != expected_url:
+            if normalize_git_url(actual_url) != norm_expected:
                 raise ValueError(
                     f"Remote push URL mismatch for '{remote_name}': expected target URL '{expected_url}', "
                     f"but git remote is configured with '{actual_url}'."
@@ -217,10 +231,6 @@ def publish_target(
         if pat in ("/", "\\", ".", "*") or ".." in pat:
             raise ValueError(f"Dangerous exclusion pattern rejected: '{pat}'")
 
-    validate_target_branch(target_branch, cwd=cwd)
-    validate_remote(remote_name, expected_url=expected_url, cwd=cwd)
-    head_commit = get_current_commit(cwd=cwd)
-
     # 2. Tag leak defense: Clean snapshot must not push historical tags
     if mode == "clean_snapshot" and push_tags:
         raise ValueError(
@@ -228,6 +238,10 @@ def publish_target(
             "Existing repository tags point to previous commits containing excluded history. "
             "To publish tags on a clean snapshot, tag the snapshot commit directly after publishing."
         )
+
+    validate_target_branch(target_branch, cwd=cwd)
+    validate_remote(remote_name, expected_url=expected_url, cwd=cwd)
+    head_commit = get_current_commit(cwd=cwd)
 
     # 3. Print operational notices
     print(f"\n[GIT PUBLISHER] Target: '{remote_name}' (branch: '{target_branch}', mode: '{mode}')")
