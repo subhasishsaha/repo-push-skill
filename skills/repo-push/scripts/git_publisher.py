@@ -24,6 +24,34 @@ import uuid
 DEFAULT_LOCK_FILE = os.path.abspath(os.path.join(".audit", ".trusted", "publishing.lock"))
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Checks whether a process with the given PID is actively running."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            SYNCHRONIZE = 0x00100000
+            process = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if process:
+                kernel32.CloseHandle(process)
+                return True
+            err = kernel32.GetLastError()
+            # ERROR_ACCESS_DENIED (5) means the process exists but lacks SYNCHRONIZE rights
+            if err == 5:
+                return True
+            return False
+        except Exception:
+            return True  # Fail-safe: assume running
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as e:
+            return e.errno == 1  # EPERM means process exists
+
+
 class PublishingLock:
     """Atomic mutual exclusion lock for publishing operations."""
     def __init__(self, lock_file=DEFAULT_LOCK_FILE):
@@ -43,16 +71,8 @@ class PublishingLock:
                 with open(self.lock_file, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                 pid = int(content) if content.isdigit() else None
-                if pid:
-                    if os.name == "nt":
-                        res = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
-                        if f"{pid}" not in res.stdout:
-                            stale = True
-                    else:
-                        try:
-                            os.kill(pid, 0)
-                        except OSError:
-                            stale = True
+                if pid and not _is_pid_alive(pid):
+                    stale = True
             except Exception:
                 pass
 
