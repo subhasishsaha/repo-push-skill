@@ -1,6 +1,6 @@
 # Agent Instructions: Orchestrator-Driven Codebase Preparation Protocol
 
-This repository implements the **`repo-publish-prep`** protocol — an orchestrator-driven multi-agent verification system for preparing, auditing, sanitizing, and packaging codebases for GitHub, GitLab, Bitbucket, and remote Git hosting.
+This repository implements the **`repo-push`** protocol — an orchestrator-driven multi-agent verification system for preparing, auditing, sanitizing, and packaging codebases for GitHub, GitLab, Bitbucket, and remote Git hosting.
 
 ## The Orchestrator Protocol & Behavioral Isolation
 

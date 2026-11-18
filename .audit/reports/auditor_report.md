@@ -1,6 +1,6 @@
 # 🕵️ Auditor Codebase Verification & Irregularities Report
 
-- **Target Repository:** `repo-publish-prep`
+- **Target Repository:** `repo-push`
 - **Audit Date:** `2026-11-18 19:38:00Z`
 - **Readiness Score:** **100 / 100** (`EXCELLENT (Ready to Publish)`)
 - **Iteration:** `2 (Re-verification Post-Remediation)`
@@ -28,8 +28,8 @@ Dynamic adversarial inspection scripts executed in `.audit/.scratch/` confirmed 
 
 | ID | Category | Initial Severity | Location | Issue Description | Remediation Implemented by Remediator | Verification by Auditor | Final Status |
 | :---: | :--- | :---: | :--- | :--- | :--- | :---: | :---: |
-| `DRIFT-001` | `DOCUMENT_TO_CODE_DRIFT` | ⚠️ **WARNING** | `README.md:82` | Tree diagram comments claimed `(agent_01..04.md)` under `skills/repo-publish-prep/templates/agents/`. | Updated tree diagram comment to `# Behavioral contracts (explorer.md, documenter.md, auditor.md, remediator.md)`. | Verified matches actual filenames on disk. | ✅ **RESOLVED** |
-| `DRIFT-002` | `DOCUMENT_TO_CODE_DRIFT` | ⚠️ **WARNING** | `README.md:83` | Tree diagram comments claimed `agent_03_report & final_report templates` under `skills/repo-publish-prep/templates/audit/`. | Updated tree diagram comment to `# auditor_report & final_report templates`. | Verified matches actual filenames on disk (`auditor_report.template.md`, `final_report.template.md`). | ✅ **RESOLVED** |
+| `DRIFT-001` | `DOCUMENT_TO_CODE_DRIFT` | ⚠️ **WARNING** | `README.md:82` | Tree diagram comments claimed `(agent_01..04.md)` under `skills/repo-push/templates/agents/`. | Updated tree diagram comment to `# Behavioral contracts (explorer.md, documenter.md, auditor.md, remediator.md)`. | Verified matches actual filenames on disk. | ✅ **RESOLVED** |
+| `DRIFT-002` | `DOCUMENT_TO_CODE_DRIFT` | ⚠️ **WARNING** | `README.md:83` | Tree diagram comments claimed `agent_03_report & final_report templates` under `skills/repo-push/templates/audit/`. | Updated tree diagram comment to `# auditor_report & final_report templates`. | Verified matches actual filenames on disk (`auditor_report.template.md`, `final_report.template.md`). | ✅ **RESOLVED** |
 | `GIT-001` | `GIT_HYGIENE` | 💡 **INFO** | Git Index / Working Tree | Active modifications awaiting final staging and commit in Phase 3. | Staged and finalized by Orchestrator during Phase 3. | Verified working tree only contains expected changes. | 💡 **INFO** |
 
 ---

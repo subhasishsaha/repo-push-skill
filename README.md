@@ -1,9 +1,9 @@
-# 🚀 repo-publish-prep
+# 🚀 repo-push
 
-[![CI Status](https://github.com/antigravity-community/repo-publish-prep/actions/workflows/ci.yml/badge.svg)](https://github.com/antigravity-community/repo-publish-prep/actions)
+[![CI Status](https://github.com/subhasishsaha/repo-push-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/subhasishsaha/repo-push-skill/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**`repo-publish-prep`** is an orchestrator-driven multi-agent verification protocol and developer toolkit designed to audit, sanitize, package, and standardize codebases before pushing or publishing to **GitHub, GitLab, Bitbucket**, or other remote Git hosting platforms.
+**`repo-push`** is an orchestrator-driven multi-agent verification protocol and developer toolkit designed to audit, sanitize, package, and standardize codebases before pushing or publishing to **GitHub, GitLab, Bitbucket**, or other remote Git hosting platforms.
 
 The primary coordinator acts as the **Orchestrator**, actively spawning and managing dedicated subagents (`explorer`, `documenter`, `auditor`, `remediator`).
 
@@ -75,7 +75,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   └── dependabot.yml                         # Automated dependency alerts
 │
 ├── skills/
-│   └── repo-publish-prep/
+│   └── repo-push/
 │       ├── SKILL.md                           # Master multi-agent orchestrator runbook
 │       │
 │       ├── templates/                         # Production-grade templates
@@ -102,13 +102,13 @@ This skill operates seamlessly across any agent harness:
 
 | Harness / Agent | Configuration Method | Location |
 | :--- | :--- | :--- |
-| **Claude Code** | Native skill directory | `.claude/skills/repo-publish-prep/` or `skills/repo-publish-prep/` |
+| **Claude Code** | Native skill directory | `.claude/skills/repo-push/` or `skills/repo-push/` |
 | **Cursor** | Context rules | Include reference in `.cursorrules` or `.cursor/skills/` |
 | **Windsurf** | Project rule | Mention skill workflow in `.windsurfrules` |
 | **GitHub Copilot** | Repository instructions | Reference in `.github/copilot-instructions.md` |
 | **Antigravity / Gemini** | Plugin or workspace skill | Mount `plugin.json` or place in `.agents/skills/` |
 | **Cline / Roo Code** | Custom instructions | Add `AGENTS.md` to system prompt / project memory |
-| **Aider** | Command / instructions | Pass `skills/repo-publish-prep/SKILL.md` to `/read` or `.aider.conf.yml` |
+| **Aider** | Command / instructions | Pass `skills/repo-push/SKILL.md` to `/read` or `.aider.conf.yml` |
 | **Custom Agent / Swarms** | System prompt / Tool calling | Point LLM to `SKILL.md` and equip standard shell & file tools |
 
 ---

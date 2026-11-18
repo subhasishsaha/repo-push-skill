@@ -28,6 +28,6 @@ jobs:
       - name: Verify skill structure and templates
         run: |
           python -c "import json, pathlib; json.loads(pathlib.Path('plugin.json').read_text())"
-          test -f skills/repo-publish-prep/SKILL.md || exit 1
+          test -f skills/repo-push/SKILL.md || exit 1
           test -f AGENTS.md || exit 1
           test -f README.md || exit 1

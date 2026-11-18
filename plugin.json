@@ -1,6 +1,6 @@
 {
-  "name": "repo-publish-prep",
-  "displayName": "Repository Publish & Hosting Preparation",
+  "name": "repo-push",
+  "displayName": "Repository Push & Hosting Preparation",
   "version": "1.0.0",
   "description": "Prepares, audits, sanitizes, and standardizes codebases for GitHub, GitLab, Bitbucket, and remote Git hosting. Checks secrets, generates essential documentation, standardizes .gitignore, cleans artifacts, and configures CI/CD workflows.",
   "author": {
@@ -11,6 +11,7 @@
     "github",
     "git",
     "codebase-prep",
+    "repo-push",
     "final-review",
     "security-audit",
     "ci-cd",
@@ -19,6 +20,6 @@
     "readiness-audit"
   ],
   "skills": [
-    "skills/repo-publish-prep"
+    "skills/repo-push"
   ]
 }

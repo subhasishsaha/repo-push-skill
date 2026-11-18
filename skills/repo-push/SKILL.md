@@ -1,6 +1,6 @@
 ---
-name: repo-publish-prep
-description: Orchestrator protocol for multi-agent adversarial codebase preparation. The coordinator spawns and manages subagents (Explorer, Documenter, Auditor, Remediator). Subagents write their own dynamic audit scripts in '.audit/.scratch/' and strictly adhere to behavioral isolation contracts stored in '.audit/.agents/'.
+name: repo-push
+description: Orchestrator protocol for multi-agent adversarial codebase preparation and push. The coordinator spawns and manages subagents (Explorer, Documenter, Auditor, Remediator). Subagents write their own dynamic audit scripts in '.audit/.scratch/' and strictly adhere to behavioral isolation contracts stored in '.audit/.agents/'.
 license: Apache-2.0
 metadata:
   version: v4
@@ -8,7 +8,7 @@ metadata:
   compatibility: universal-agent-agnostic
 ---
 
-# Repository Publish & Hosting Preparation (`repo-publish-prep`)
+# Repository Push & Hosting Preparation (`repo-push`)
 
 An orchestrator-driven multi-agent verification protocol that guarantees **truth in code and documentation** before publishing or pushing to GitHub, GitLab, Bitbucket, or remote Git hosting.
 
