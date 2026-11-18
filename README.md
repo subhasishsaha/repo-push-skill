@@ -9,15 +9,16 @@ The primary coordinator acts as the **Orchestrator**, actively spawning and mana
 
 ---
 
-## 🛡️ Behavioral Isolation Contracts (`.audit/.agents/`)
+## 🛡️ In-Memory Behavioral Isolation Contracts
 
-To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator enforces strict behavioral contracts stored in `.audit/.agents/`:
-- **`explorer.md`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
-- **`documenter.md`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
-- **`auditor.md`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
-- **`remediator.md`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!** All audit reports are strictly owned by the auditor and the Orchestrator.
+To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator enforces strict behavioral isolation contracts directly **in-memory** during subagent invocation.
 
-The Orchestrator injects the exact behavioral contract from `.audit/.agents/<role>.md` into each subagent's system prompt and task instructions.
+> **Zero Disk Clutter Guarantee:** No `.audit/.agents/` directory or contract files are copied to disk in target repositories. Contracts are injected directly into subagent system prompts.
+
+- **`explorer`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
+- **`documenter`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
+- **`auditor`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
+- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!** All audit reports are strictly owned by the auditor and the Orchestrator.
 
 ---
 
@@ -25,8 +26,7 @@ The Orchestrator injects the exact behavioral contract from `.audit/.agents/<rol
 
 ```mermaid
 flowchart TD
-    Start["🚀 Orchestrator Invocation"] --> InitAgents["Initialize .audit/.agents/ contracts"]
-    InitAgents --> CheckReadme{"README.md exists?"}
+    Start["🚀 Orchestrator Invocation"] --> CheckReadme{"README.md exists?"}
     
     CheckReadme -->|Yes| VerifyUser["Prompt User: Does README match intended app behavior?"]
     VerifyUser -->|Drifted| Halt["🛑 Halt execution & ask user for clarification"]

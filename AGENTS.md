@@ -6,12 +6,12 @@ This repository implements the **`repo-push`** protocol — an orchestrator-driv
 
 The primary agent must act as the **Orchestrator**, coordinating specialized subagents (`explorer`, `documenter`, `auditor`, `remediator`) rather than performing audits directly.
 
-### Behavioral Isolation Contracts (`.audit/.agents/`)
-To prevent subagents from overstepping their scope (e.g. `remediator` editing `auditor`'s report), the Orchestrator injects behavioral contracts from `.audit/.agents/`:
-- **`explorer.md`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
-- **`documenter.md`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
-- **`auditor.md`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
-- **`remediator.md`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!** All audit reports are strictly owned by the auditor and the Orchestrator.
+### In-Memory Behavioral Isolation Contracts
+To prevent subagents from overstepping their scope (e.g. `remediator` editing `auditor`'s report), the Orchestrator injects behavioral contracts directly in-memory (zero files created on disk in target repositories):
+- **`explorer`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
+- **`documenter`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
+- **`auditor`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
+- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!** All audit reports are strictly owned by the auditor and the Orchestrator.
 
 Subagents dynamically create their own targeted audit and discovery scripts in `.audit/.scratch/` for each run.
 

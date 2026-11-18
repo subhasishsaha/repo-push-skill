@@ -16,18 +16,11 @@ The primary coordinator acts as the **Orchestrator**. It does not perform audits
 
 ---
 
-## 🛡️ Behavioral Isolation & File Boundary Contracts (`.audit/.agents/`)
+## 🛡️ In-Memory Behavioral Isolation Contracts
 
-To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator enforces strict behavioral contracts stored in:
-```text
-.audit/.agents/
-├── explorer.md      # Explorer contract (write only .audit/reports/explorer_report.md & .audit/.scratch/)
-├── documenter.md    # Documenter contract (write only README.md; never touch .audit/reports/)
-├── auditor.md       # Auditor contract (write only .audit/.scratch/ & .audit/reports/auditor_report.md)
-└── remediator.md    # Remediation contract (write ONLY application code; NEVER touch .audit/reports/)
-```
+To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator injects strict behavioral isolation contracts directly **in-memory** into each subagent's system prompt.
 
-The Orchestrator injects the exact behavioral contract from `.audit/.agents/<role>.md` into each subagent's system prompt and task instructions.
+> **Zero Disk Clutter Guarantee:** No `.audit/.agents/` folder or contract files are written to disk in target repositories. The Orchestrator injects the contracts directly when calling `define_subagent` and `invoke_subagent`.
 
 ---
 
@@ -35,17 +28,16 @@ The Orchestrator injects the exact behavioral contract from `.audit/.agents/<rol
 
 ```mermaid
 flowchart TD
-    Start["🚀 Orchestrator Starts"] --> InitAgents["Initialize .audit/.agents/ contracts"]
-    InitAgents --> CheckReadme{"Does README.md exist?"}
+    Start["🚀 Orchestrator Starts"] --> CheckReadme{"Does README.md exist?"}
     
     %% Phase 1
     CheckReadme -->|Yes| VerifyWithUser["Prompt User: Does README match intended application behavior?"]
     VerifyWithUser -->|User: Drifted / Wrong| HaltUser["🛑 Halt Execution Immediately & Ask User for Clarification"]
     VerifyWithUser -->|User: Verified OK| Phase2["Proceed to Phase 2"]
     
-    CheckReadme -->|No| LaunchExp["Orchestrator injects .audit/.agents/explorer.md\nSpawns Explorer"]
+    CheckReadme -->|No| LaunchExp["Orchestrator injects Explorer Contract in-memory\nSpawns Explorer"]
     LaunchExp --> ExpWork["Explorer inspects code, creates scratch scripts in .audit/.scratch/\nWrites .audit/reports/explorer_report.md\n(STRICT: Never writes README.md)"]
-    ExpWork --> LaunchDoc["Orchestrator injects .audit/.agents/documenter.md\nSpawns Documenter"]
+    ExpWork --> LaunchDoc["Orchestrator injects Documenter Contract in-memory\nSpawns Documenter"]
     LaunchDoc --> DocVerify{"Documenter verifies code on disk.\nDoes Explorer report match truth?"}
     DocVerify -->|Fails / Discrepancy| ExpRetry["Reject report with diff.\nExplorer discards & re-runs"]
     ExpRetry --> ExpWork
@@ -54,11 +46,11 @@ flowchart TD
     VerifyNewReadme --> Phase2
 
     %% Phase 2
-    Phase2 --> LaunchAud["Orchestrator injects .audit/.agents/auditor.md\nSpawns Auditor"]
+    Phase2 --> LaunchAud["Orchestrator injects Auditor Contract in-memory\nSpawns Auditor"]
     LaunchAud --> AudWork["Auditor creates on-demand audit scripts in .audit/.scratch/:\n- AST stubs & eagerness bias\n- Import errors & undeclared packages\n- Hardcoded developer paths & IPs\n- Markdown link & doc drift\nWrites findings to .audit/reports/auditor_report.md\n(STRICT: Makes NO application code edits)"]
     AudWork --> CheckIssues{"Are there blockers / issues?"}
     CheckIssues -->|No Issues| Phase3["Proceed to Phase 3"]
-    CheckIssues -->|Issues Found| LaunchRem["Orchestrator injects .audit/.agents/remediator.md\nSpawns Remediator"]
+    CheckIssues -->|Issues Found| LaunchRem["Orchestrator injects Remediator Contract in-memory\nSpawns Remediator"]
     LaunchRem --> RemWork["Remediator implements full, un-stubbed fixes in code\n(STRICT: NEVER touches .audit/reports/)"]
     RemWork --> AudRecheck["Orchestrator returns control to Auditor\nRe-runs dynamic audit in .audit/.scratch/"]
     AudRecheck --> CheckIssues
@@ -79,31 +71,31 @@ Instead of brittle static scripts, subagents write purpose-built scripts directl
   2. Imports vs manifests (`package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`).
   3. Absolute paths (`C:\Users\...`, `/home/...`) and internal private IPs.
   4. Broken relative Markdown links and documented entrypoints.
-- `.audit/` (including `.audit/.scratch/` and `.audit/.agents/`) is ignored in `.gitignore` so temporary audit scripts never dirty the repository.
+- `.audit/` (including `.audit/.scratch/`) is ignored in `.gitignore` so temporary audit scripts never dirty the repository.
 
 ---
 
-## 🤖 The 4 Subagent Behavioral Boundaries
+## 🤖 The 4 In-Memory Subagent Behavioral Boundaries
 
-The Orchestrator must define and spawn each subagent with its explicit contract from `.audit/.agents/`:
+The Orchestrator defines and spawns each subagent by injecting its explicit boundary contract directly into the subagent's `SystemPrompt` and task instructions (no contract files are created on disk in target repositories):
 
 ### 1. `explorer` — Codebase Archeologist
-- **Contract File:** `.audit/.agents/explorer.md`
+- **Role:** Explores repository structure, architecture, and capabilities; drafts objective findings.
 - **Permitted Writes:** `.audit/.scratch/*`, `.audit/reports/explorer_report.md`.
 - **FORBIDDEN:** Creating or editing `README.md`, editing application source code, editing `.audit/reports/final_report.md` or `.audit/reports/auditor_report.md`.
 
 ### 2. `documenter` — Independent Verifier & Technical Writer
-- **Contract File:** `.audit/.agents/documenter.md`
+- **Role:** Independently verifies explorer findings line-by-line against actual source code; drafts `README.md`.
 - **Permitted Writes:** `README.md` at repository root.
 - **FORBIDDEN:** Modifying `.audit/reports/explorer_report.md` or any file in `.audit/reports/`, editing application code, inventing ungrounded features.
 
 ### 3. `auditor` — Adversarial Codebase Auditor
-- **Contract File:** `.audit/.agents/auditor.md`
+- **Role:** Dynamically writes and runs AST and security audit scripts in `.audit/.scratch/`; writes findings report.
 - **Permitted Writes:** `.audit/.scratch/*`, `.audit/reports/auditor_report.md`.
 - **FORBIDDEN:** Modifying application source code files, editing `README.md`, editing package manifests. Sole maintainer of the audit report.
 
 ### 4. `remediator` — Remediation Engineer
-- **Contract File:** `.audit/.agents/remediator.md`
+- **Role:** Implements full, un-stubbed production code and config fixes to resolve findings in `auditor_report.md`.
 - **Permitted Writes:** Application source code files, package manifests (`package.json`, `requirements.txt`), repository hygiene files (`.gitignore`, `.editorconfig`, `.env.example`, `CONTRIBUTING.md`, `SECURITY.md`).
 - **CRITICAL RESTRICTION:** **MUST NEVER TOUCH, EDIT, OR MODIFY `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!**
   - All audit reports belong exclusively to the auditor and Orchestrator.
@@ -115,8 +107,8 @@ The Orchestrator must define and spawn each subagent with its explicit contract 
 
 ## 🔄 Orchestrator Execution Protocol
 
-### Step 0: Behavioral Setup
-Ensure `.audit/.agents/` exists and contains the 4 behavioral contracts (bootstrapped from `templates/agents/` if needed).
+### Step 0: Pre-Flight Setup
+Ensure `.audit/reports/` exists. No contract files need to be written to disk in target repositories; all behavioral contracts are injected directly in-memory by the Orchestrator.
 
 ### Phase 1: README Verification Gate
 1. Check if `README.md` exists.
@@ -125,17 +117,17 @@ Ensure `.audit/.agents/` exists and contains the 4 behavioral contracts (bootstr
    - If user signals drift: **Halt execution immediately.** Ask for clarification before proceeding.
    - If user confirms: Proceed to Phase 2.
 3. If `README.md` is missing:
-   - Orchestrator injects `.audit/.agents/explorer.md` and spawns `explorer`. The `explorer` writes `.audit/reports/explorer_report.md`.
-   - Orchestrator injects `.audit/.agents/documenter.md` and spawns `documenter`. The `documenter` verifies. If failed, loops back to `explorer` (Max 3 iterations). Once passed, `documenter` drafts `README.md`.
+   - Orchestrator injects the in-memory Explorer contract and spawns `explorer`. The `explorer` writes `.audit/reports/explorer_report.md`.
+   - Orchestrator injects the in-memory Documenter contract and spawns `documenter`. The `documenter` verifies. If failed, loops back to `explorer` (Max 3 iterations). Once passed, `documenter` drafts `README.md`.
    - Present newly drafted `README.md` to user for explicit confirmation.
 
 ### Phase 2: Implementation Integrity Loop
 1. Orchestrator ensures directory `.audit/.scratch/` exists.
-2. Orchestrator injects `.audit/.agents/auditor.md` and invokes `auditor`.
+2. Orchestrator injects the in-memory Auditor contract and invokes `auditor`.
 3. `auditor` writes its inspection scripts into `.audit/.scratch/`, runs them, and outputs `.audit/reports/auditor_report.md`.
 4. Orchestrator reads `.audit/reports/auditor_report.md`.
 5. If blockers or warnings exist:
-   - Orchestrator injects `.audit/.agents/remediator.md` and invokes `remediator` with the action items.
+   - Orchestrator injects the in-memory Remediator contract and invokes `remediator` with the action items.
    - `remediator` implements real code fixes. It strictly leaves `.audit/reports/` untouched.
    - Orchestrator hands control back to `auditor` to re-execute its scratch audit.
    - Loop repeats until 0 blockers remain (Circuit breaker: Max 3 iterations, then escalate to user).
