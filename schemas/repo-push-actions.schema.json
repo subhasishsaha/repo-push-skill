@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push-actions.schema.json",
+  "title": "RepoPushActionsConfig",
+  "description": "Configuration schema for repo-push declarative actions and platform workflow specifications.",
+  "type": "object",
+  "required": ["version", "actions"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "Actions configuration specification version.",
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "actions": {
+      "description": "List of declarative workflows to generate across target platforms.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Unique identifier for this workflow (maps to .github/workflows/<name>.yml or GitLab job).",
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "description": {
+            "description": "High-level plain English intent describing what this workflow should execute.",
+            "type": "string",
+            "minLength": 5
+          },
+          "platforms": {
+            "description": "Target hosting platforms where this workflow applies. Use 'all' or a list of platform names.",
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["all"]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["github", "gitlab", "huggingface", "bitbucket", "generic"]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            ],
+            "default": "all"
+          }
+        }
+      }
+    }
+  }
+}

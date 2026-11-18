@@ -144,14 +144,19 @@ def build_yaml_content(targets, require_confirmation=True):
 def main():
     force = "--force" in sys.argv or "-f" in sys.argv
     dry_run = "--dry-run" in sys.argv
-    output_path = ".repo-push.yaml"
+    output_path = os.path.join(".repo-push", "config.yaml")
 
     for i, arg in enumerate(sys.argv):
         if arg in ("--output", "-o") and i + 1 < len(sys.argv):
             output_path = sys.argv[i + 1]
 
     if not force and not dry_run:
-        for candidate in [".repo-push.yaml", ".repo-push.yml"]:
+        for candidate in [
+            os.path.join(".repo-push", "config.yaml"),
+            os.path.join(".repo-push", "config.yml"),
+            ".repo-push.yaml",
+            ".repo-push.yml",
+        ]:
             if os.path.exists(candidate):
                 print(f"[INFO] '{candidate}' already exists. Use --force to overwrite.")
                 return 0
@@ -196,6 +201,9 @@ def main():
         return 0
 
     try:
+        parent_dir = os.path.dirname(output_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(yaml_text)
         target_summary = ", ".join(f"{t['name']} ({t['platform']})" for t in targets)

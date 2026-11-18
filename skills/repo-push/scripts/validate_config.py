@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-validate_config.py — Zero-dependency Validator for .repo-push.yaml
-Parses and mathematically validates .repo-push.yaml against the official schema specification.
+validate_config.py — Zero-dependency Validator for .repo-push/config.yaml & .repo-push/actions.yaml
+Parses and validates configuration and enforces strict cross-referencing between actions and remotes.
 """
 
 import os
@@ -14,8 +14,7 @@ VALID_URL_PREFIXES = ("https://", "http://", "git@", "ssh://")
 
 def parse_simple_yaml(text):
     """
-    Lightweight, zero-dependency YAML parser for standard .repo-push.yaml structures.
-    Handles dictionaries, nested dictionaries, scalar lists, booleans, and integers.
+    Lightweight, zero-dependency YAML parser for standard .repo-push/config.yaml structures.
     """
     data = {}
     current_target = None
@@ -24,9 +23,8 @@ def parse_simple_yaml(text):
     current_list_field = None
 
     lines = text.splitlines()
-    for line_idx, raw_line in enumerate(lines, start=1):
+    for raw_line in lines:
         line = raw_line.rstrip()
-        # Strip trailing comments unless part of a string
         if "#" in line and not ("http://" in line or "https://" in line):
             line = re.sub(r"\s+#.*$", "", line)
 
@@ -36,7 +34,6 @@ def parse_simple_yaml(text):
 
         indent = len(line) - len(line.lstrip())
 
-        # Top-level keys (indent 0)
         if indent == 0:
             current_section = None
             current_list_field = None
@@ -57,7 +54,6 @@ def parse_simple_yaml(text):
                 else:
                     data[k] = v
 
-        # Subsections under pre_push (indent 2)
         elif current_section == "pre_push" and indent >= 2:
             if ":" in stripped:
                 k, v = stripped.split(":", 1)
@@ -71,7 +67,6 @@ def parse_simple_yaml(text):
                 elif k == "dry_run":
                     data["pre_push"][k] = (v.lower() == "true")
 
-        # Targets list items
         elif current_section == "targets":
             if indent == 2 and stripped.startswith("- "):
                 current_target = {}
@@ -101,17 +96,71 @@ def parse_simple_yaml(text):
     return data
 
 
+def parse_simple_actions_yaml(text):
+    """
+    Lightweight YAML parser for .repo-push/actions.yaml structures.
+    """
+    data = {}
+    actions = []
+    current_action = None
+    current_section = None
+
+    lines = text.splitlines()
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if "#" in line:
+            line = re.sub(r"\s+#.*$", "", line)
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        indent = len(line) - len(line.lstrip())
+
+        if indent == 0:
+            if ":" in stripped:
+                k, v = stripped.split(":", 1)
+                k = k.strip()
+                v = v.strip()
+                if k == "version":
+                    data["version"] = v.strip("\"'")
+                elif k == "actions":
+                    data["actions"] = actions
+                    current_section = "actions"
+
+        elif current_section == "actions":
+            if indent == 2 and stripped.startswith("- "):
+                current_action = {}
+                actions.append(current_action)
+                rest = stripped[2:].strip()
+                if ":" in rest:
+                    k, v = rest.split(":", 1)
+                    current_action[k.strip()] = v.strip().strip("\"'")
+            elif current_action is not None and ":" in stripped:
+                k, v = stripped.split(":", 1)
+                k = k.strip()
+                v = v.strip()
+                if k == "platforms":
+                    if v.startswith("[") and v.endswith("]"):
+                        items = [p.strip().strip("\"'") for p in v[1:-1].split(",") if p.strip()]
+                        current_action["platforms"] = items
+                    else:
+                        current_action["platforms"] = v.strip("\"'")
+                else:
+                    current_action[k] = v.strip("\"'")
+
+    return data
+
+
 def validate_config_data(data):
     errors = []
 
-    # 1. Version check
     version = data.get("version")
     if not version:
         errors.append("Missing required top-level field 'version'.")
     elif version != "1.0":
         errors.append(f"Invalid 'version': expected '1.0', got '{version}'.")
 
-    # 2. Targets check
     targets = data.get("targets")
     if targets is None:
         errors.append("Missing required field 'targets'.")
@@ -120,28 +169,24 @@ def validate_config_data(data):
     else:
         for idx, t in enumerate(targets):
             prefix = f"targets[{idx}]"
-            # Name
             name = t.get("name")
             if not name:
                 errors.append(f"{prefix}: Missing required field 'name'.")
             elif not re.match(r"^[a-zA-Z0-9_-]+$", str(name)):
                 errors.append(f"{prefix}.name: '{name}' contains invalid characters (use alphanum, hyphen, underscore).")
 
-            # Platform
             platform = t.get("platform")
             if not platform:
                 errors.append(f"{prefix}: Missing required field 'platform'.")
             elif platform not in VALID_PLATFORMS:
                 errors.append(f"{prefix}.platform: '{platform}' is invalid. Allowed: {sorted(VALID_PLATFORMS)}.")
 
-            # URL
             url = t.get("url")
             if not url:
                 errors.append(f"{prefix}: Missing required field 'url'.")
             elif not any(str(url).startswith(p) for p in VALID_URL_PREFIXES):
                 errors.append(f"{prefix}.url: '{url}' must start with https://, http://, git@, or ssh://.")
 
-            # Excludes
             excludes = t.get("exclude", [])
             if isinstance(excludes, list):
                 for exc in excludes:
@@ -151,18 +196,82 @@ def validate_config_data(data):
     return errors
 
 
+def validate_actions_data(actions_data, configured_platforms):
+    errors = []
+
+    version = actions_data.get("version")
+    if not version:
+        errors.append("actions.yaml: Missing required field 'version'.")
+    elif version != "1.0":
+        errors.append(f"actions.yaml: Invalid 'version': expected '1.0', got '{version}'.")
+
+    actions = actions_data.get("actions")
+    if actions is None:
+        errors.append("actions.yaml: Missing required field 'actions'.")
+    elif not isinstance(actions, list) or len(actions) == 0:
+        errors.append("actions.yaml: 'actions' must be a non-empty list.")
+    else:
+        for idx, act in enumerate(actions):
+            prefix = f"actions[{idx}]"
+            name = act.get("name")
+            if not name:
+                errors.append(f"{prefix}: Missing required field 'name'.")
+            elif not re.match(r"^[a-zA-Z0-9_-]+$", str(name)):
+                errors.append(f"{prefix}.name: '{name}' contains invalid characters.")
+
+            desc = act.get("description")
+            if not desc or len(str(desc).strip()) < 5:
+                errors.append(f"{prefix}: 'description' is required and must be descriptive (at least 5 characters).")
+
+            platforms = act.get("platforms", "all")
+            if isinstance(platforms, list):
+                if not platforms:
+                    errors.append(f"{prefix}.platforms: List cannot be empty.")
+                for p in platforms:
+                    if p not in VALID_PLATFORMS and p != "all":
+                        errors.append(f"{prefix}.platforms: Unknown platform '{p}'.")
+                    elif p != "all" and p not in configured_platforms:
+                        # STRICT CROSS-VALIDATION ERROR
+                        errors.append(
+                            f"[BLOCKER] ACT-001: Action '{name}' specifies platform '{p}', "
+                            f"but '{p}' is not declared in targets of config.yaml! "
+                            f"(Configured targets: {sorted(configured_platforms)})"
+                        )
+            elif isinstance(platforms, str):
+                if platforms != "all" and platforms not in VALID_PLATFORMS:
+                    errors.append(f"{prefix}.platforms: Unknown platform '{platforms}'.")
+                elif platforms != "all" and platforms not in configured_platforms:
+                    errors.append(
+                        f"[BLOCKER] ACT-001: Action '{name}' specifies platform '{platforms}', "
+                        f"but '{platforms}' is not declared in targets of config.yaml! "
+                        f"(Configured targets: {sorted(configured_platforms)})"
+                    )
+                elif platforms == "all" and not configured_platforms:
+                    errors.append(
+                        f"[BLOCKER] ACT-002: Action '{name}' specifies 'platforms: all', "
+                        f"but no target platforms are configured in config.yaml!"
+                    )
+
+    return errors
+
+
 def main():
     target_path = None
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
         target_path = sys.argv[1]
     else:
-        for candidate in [".repo-push.yaml", ".repo-push.yml"]:
+        for candidate in [
+            os.path.join(".repo-push", "config.yaml"),
+            os.path.join(".repo-push", "config.yml"),
+            ".repo-push.yaml",
+            ".repo-push.yml",
+        ]:
             if os.path.exists(candidate):
                 target_path = candidate
                 break
 
     if not target_path or not os.path.exists(target_path):
-        print("[ERROR] No .repo-push.yaml or .repo-push.yml found to validate.", file=sys.stderr)
+        print("[ERROR] No .repo-push/config.yaml found to validate.", file=sys.stderr)
         return 1
 
     try:
@@ -173,16 +282,49 @@ def main():
         return 1
 
     data = parse_simple_yaml(content)
-    errors = validate_config_data(data)
+    config_errors = validate_config_data(data)
 
-    if errors:
-        print(f"[FAIL] '{target_path}' failed schema validation ({len(errors)} error(s)):")
-        for err in errors:
+    if config_errors:
+        print(f"[FAIL] '{target_path}' failed schema validation ({len(config_errors)} error(s)):")
+        for err in config_errors:
             print(f"  - {err}")
         return 1
 
-    targets_count = len(data.get("targets", []))
-    print(f"[PASS] '{target_path}' is valid! ({targets_count} target(s) configured)")
+    targets = data.get("targets", [])
+    configured_platforms = {t.get("platform") for t in targets if t.get("platform")}
+    print(f"[PASS] '{target_path}' is valid! ({len(targets)} target(s) configured: {', '.join(sorted(configured_platforms))})")
+
+    # Optional actions.yaml check
+    actions_path = None
+    for candidate in [
+        os.path.join(".repo-push", "actions.yaml"),
+        os.path.join(".repo-push", "actions.yml"),
+    ]:
+        if os.path.exists(candidate):
+            actions_path = candidate
+            break
+
+    if actions_path:
+        try:
+            with open(actions_path, "r", encoding="utf-8") as f:
+                act_content = f.read()
+            actions_data = parse_simple_actions_yaml(act_content)
+            actions_errors = validate_actions_data(actions_data, configured_platforms)
+
+            if actions_errors:
+                print(f"[FAIL] '{actions_path}' failed validation ({len(actions_errors)} error(s)):")
+                for err in actions_errors:
+                    print(f"  - {err}")
+                return 1
+
+            act_count = len(actions_data.get("actions", []))
+            print(f"[PASS] '{actions_path}' is valid! ({act_count} action(s) defined, cross-referenced with config.yaml)")
+        except Exception as e:
+            print(f"[ERROR] Failed to validate '{actions_path}': {e}", file=sys.stderr)
+            return 1
+    else:
+        print("[INFO] No .repo-push/actions.yaml found (optional; standard default templates active).")
+
     return 0
 
 

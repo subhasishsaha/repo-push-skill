@@ -40,16 +40,24 @@ Navigate to any codebase you want to prepare for remote publishing:
    > *"Perform an adversarial pre-push review on this codebase."*
 
 3. **Autonomous Verification & Remote Publishing Workflow:**
-   - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and generates `.repo-push.yaml` with canonical mutual exclusion rules deterministically (zero user input required).
+   - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push/config.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and generates `.repo-push/config.yaml` with canonical mutual exclusion rules deterministically (zero user input required).
    - **Phase 1 (README Gate):** The Orchestrator verifies your `README.md` against intended functionality and prompts for confirmation. (If missing, `explorer` and `documenter` collaborate to draft one).
-   - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). The `auditor` executes on-demand inspection scripts in `.audit/.scratch/` (AST stubs, dependencies, path/IP leaks, doc drift, secrets). The `remediator` fixes all issues in code.
+   - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). If `.repo-push/actions.yaml` is present, it compiles declarative action intents into native platform workflows. The `auditor` executes on-demand inspection scripts in `.audit/.scratch/`. The `remediator` fixes all issues in code.
    - **Phase 3 (Certification & Filtered Remote Push):** Upon reaching a **100/100 readiness score**, the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and pushes cleanly using ephemeral Git tree filtering so platform clutter never cross-contaminates.
 
 ---
 
-## 📋 Configuration Standard: `.repo-push.yaml`
+## 📋 Configuration Standard: `.repo-push/`
 
-`repo-push` uses a single, declarative YAML standard placed at the root of your project:
+`repo-push` keeps your root clean by managing configurations inside `.repo-push/`:
+
+```text
+.repo-push/
+├── config.yaml       # (Required) Target remotes, platform exclusions, pre-push controls
+└── actions.yaml      # (Optional) Declarative workflow & action intents across platforms
+```
+
+### 1. Remote Publishing: `.repo-push/config.yaml`
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push.schema.json
@@ -87,8 +95,32 @@ targets:
       - "*.bin"
 ```
 
-- **Zero-Touch Setup:** When you already have a `git remote`, `repo-push` generates this file automatically.
-- **IDE Autocomplete & Validation:** Built-in JSON Schema provides instant autocomplete and error highlighting in VS Code, Cursor, and Windsurf.
+### 2. Custom Action Recipes: `.repo-push/actions.yaml` (Optional)
+
+Instead of hand-writing complex GitHub Actions or GitLab CI YAML, describe your workflows in plain English. The agent compiles them into native, production-grade workflows for all designated platforms (`platforms: all` or specific platforms):
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push-actions.schema.json
+version: "1.0"
+
+actions:
+  # Shared workflow compiled across ALL active targets in config.yaml
+  - name: test
+    platforms: all
+    description: "Run pytest across Python 3.10 and 3.11 with coverage on push and PR"
+
+  - name: lint
+    platforms: all
+    description: "Check formatting and code quality using ruff"
+
+  # Platform-specific workflow (only compiled for GitHub)
+  - name: release
+    platforms: [github]
+    description: "Publish a GitHub release with automated release notes when a tag starting with 'v' is pushed"
+```
+
+- **Zero-Touch Setup:** When you already have a `git remote`, `repo-push` generates `config.yaml` automatically.
+- **Strict Cross-Validation (`ACT-001`):** Prevents dead code by ensuring every platform referenced in `actions.yaml` is actively defined in `config.yaml`.
 - **Pristine Local Branches:** Exclusion filtering happens via ephemeral Git release trees—your local working copy and local `main` branch stay 100% untouched.
 
 ---

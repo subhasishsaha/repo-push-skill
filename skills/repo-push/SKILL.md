@@ -105,9 +105,17 @@ The Orchestrator defines and spawns each subagent by injecting its explicit boun
 
 ---
 
-## 📋 The `.repo-push.yaml` Publishing Specification Standard
+## 📋 The `.repo-push/` Configuration Standard
 
-Projects configure their target remotes, exclusion filters, and push behavior in `.repo-push.yaml` at repository root:
+Repository configuration is centrally managed inside a clean `.repo-push/` directory at the project root:
+
+```text
+.repo-push/
+├── config.yaml       # (Required) Target remotes, platform exclusions, pre-push controls
+└── actions.yaml      # (Optional) Declarative workflow & action intents across platforms
+```
+
+### 1. Remote Publishing Configuration: `.repo-push/config.yaml`
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push.schema.json
@@ -145,9 +153,34 @@ targets:
       - "*.bin"
 ```
 
-- **IDE Autocomplete & Validation:** Powered by `schemas/repo-push.schema.json`.
-- **Zero-Touch Onboarding:** If `.repo-push.yaml` does not exist, `scripts/generate_config.py` generates it deterministically from `git remote -v`.
-- **Pre-Push Validation:** `scripts/validate_config.py` mathematically verifies the YAML against the schema.
+### 2. Declarative Action Recipes: `.repo-push/actions.yaml` (Optional)
+
+Developers describe **what** they want executed without having to write low-level GitHub Actions or GitLab CI YAML syntax. The LLM reads the description and compiles it to native, hardened workflows for the designated platforms:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push-actions.schema.json
+version: "1.0"
+
+actions:
+  # Shared workflow compiled across ALL active targets in config.yaml
+  - name: test
+    platforms: all
+    description: "Run pytest across Python 3.10 and 3.11 with coverage on push and PR"
+
+  - name: lint
+    platforms: all
+    description: "Check formatting and code quality using ruff"
+
+  # Platform-specific workflow (only compiled for GitHub)
+  - name: release
+    platforms: [github]
+    description: "Publish a GitHub release with automated release notes when a tag starting with 'v' is pushed"
+```
+
+- **IDE Autocomplete & Validation:** Powered by `schemas/repo-push.schema.json` and `schemas/repo-push-actions.schema.json`.
+- **Zero-Touch Onboarding:** If `.repo-push/config.yaml` is missing, `scripts/generate_config.py` generates it deterministically from `git remote -v`.
+- **Strict Cross-Validation Gate (`ACT-001`):** If `actions.yaml` defines a workflow for a platform not declared in `config.yaml` targets, validation fails fast with a blocker.
+- **Opt-In Behavior:** If `actions.yaml` is absent, standard built-in platform templates are used with zero extra steps.
 
 ---
 
@@ -155,15 +188,18 @@ targets:
 
 ### Step 0: Remote Auto-Discovery & Pre-Flight Setup
 1. Ensure `.audit/reports/` and `.audit/.scratch/` exist.
-2. **Deterministic Configuration Check (`.repo-push.yaml`):**
-   - If `.repo-push.yaml` (or `.repo-push.yml`) is missing in repository root:
+2. **Deterministic Configuration Check (`.repo-push/config.yaml`):**
+   - If `.repo-push/config.yaml` (or `.repo-push/config.yml`) is missing in repository root:
      - Orchestrator executes the bundled generator script:
        ```bash
        python <skill>/scripts/generate_config.py
        ```
-     - The script parses `git remote -v`, detects remote platforms (GitHub, GitLab, Hugging Face, Bitbucket), resolves the active branch, and generates `.repo-push.yaml` with canonical mutual exclusions deterministically (zero hallucinations, zero token cost).
-   - If `.repo-push.yaml` already exists:
-     - Orchestrator executes `python <skill>/scripts/validate_config.py` to mathematically verify the configuration against `schemas/repo-push.schema.json`.
+     - The script parses `git remote -v`, detects remote platforms (GitHub, GitLab, Hugging Face, Bitbucket), resolves the active branch, and generates `.repo-push/config.yaml` with canonical mutual exclusions deterministically (zero hallucinations, zero token cost).
+   - If `.repo-push/config.yaml` exists:
+     - Orchestrator executes `python <skill>/scripts/validate_config.py` to verify:
+       - Schema validity of `.repo-push/config.yaml`.
+       - Schema validity of `.repo-push/actions.yaml` (if present).
+       - **Strict Cross-Validation:** Confirms all platforms referenced in `actions.yaml` are actively declared as targets in `config.yaml`. Any missing platform raises a hard blocker (`ACT-001`).
 
 ---
 
@@ -182,8 +218,12 @@ targets:
 
 ### Phase 2: Implementation Integrity Loop & Targeted Scaffolding
 1. **Targeted Platform Scaffolding:**
-   - Inspect active platforms declared in `.repo-push.yaml` `targets`.
-   - **Only scaffold configurations for declared platforms:**
+   - Inspect active platforms declared in `.repo-push/config.yaml` `targets`.
+   - **Custom Actions Compilation:** If `.repo-push/actions.yaml` exists:
+     - For each action in `actions`, compile it into native workflows for all matching active platforms (`platforms: all` or specific platforms).
+     - For GitHub: write `.github/workflows/<name>.yml`.
+     - For GitLab: write the job into `.gitlab-ci.yml`.
+   - **Default Scaffolding (if `actions.yaml` is absent):**
      - `github`: Ensure `.github/workflows/ci.yml` exists. Never scaffold `.gitlab-ci.yml`.
      - `gitlab`: Ensure `.gitlab-ci.yml` exists. Never scaffold `.github/`.
      - `huggingface`: Ensure `README.md` includes required YAML frontmatter (`sdk`, `app_file`, `title`), and ensure any model weights >10MB are configured with `git lfs track`.

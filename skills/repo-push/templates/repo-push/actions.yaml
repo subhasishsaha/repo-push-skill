@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/subhasishsaha/repo-push-skill/main/schemas/repo-push-actions.schema.json
+version: "1.0"
+
+actions:
+  - name: test
+    platforms: all
+    description: "Run automated test suite across supported runtime versions on push and pull request"
+
+  - name: lint
+    platforms: all
+    description: "Check code formatting, syntax, and style guidelines using project linters"
+
+  - name: release
+    platforms: [github]
+    description: "Publish a GitHub release with automated release notes when a version tag (v*.*.*) is pushed"
