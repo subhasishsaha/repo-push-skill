@@ -9,6 +9,75 @@ The primary coordinator acts as the **Orchestrator**, actively spawning and mana
 
 ---
 
+## 📦 Installation
+
+`repo-push` can be installed globally for all projects or added locally to a specific workspace.
+
+### Option 1: Global Installation (Recommended)
+
+Install once to make `/repo-push` available across all your repositories:
+
+#### 🤖 Antigravity / Gemini CLI
+```bash
+# Linux / macOS
+git clone https://github.com/subhasishsaha/repo-push-skill.git /tmp/repo-push-skill \
+  && mkdir -p ~/.gemini/config/skills \
+  && cp -r /tmp/repo-push-skill/skills/repo-push ~/.gemini/config/skills/ \
+  && rm -rf /tmp/repo-push-skill
+```
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/subhasishsaha/repo-push-skill.git "$env:TEMP\repo-push-skill"
+New-Item -ItemType Directory -Force -Path "$HOME\.gemini\config\skills"
+Copy-Item -Recurse -Force "$env:TEMP\repo-push-skill\skills\repo-push" "$HOME\.gemini\config\skills\"
+Remove-Item -Recurse -Force "$env:TEMP\repo-push-skill"
+```
+
+#### 🟣 Claude Code
+```bash
+# Install to personal skills directory
+mkdir -p ~/.claude/skills
+git clone https://github.com/subhasishsaha/repo-push-skill.git /tmp/repo-push-skill \
+  && cp -r /tmp/repo-push-skill/skills/repo-push ~/.claude/skills/ \
+  && rm -rf /tmp/repo-push-skill
+```
+
+---
+
+### Option 2: Project-Level Installation
+
+To install `repo-push` directly into a single project workspace:
+
+```bash
+# In your target project root:
+mkdir -p .agents/skills
+git clone https://github.com/subhasishsaha/repo-push-skill.git /tmp/repo-push-skill \
+  && cp -r /tmp/repo-push-skill/skills/repo-push .agents/skills/ \
+  && rm -rf /tmp/repo-push-skill
+```
+
+---
+
+## 🚀 Quick Start & Usage
+
+Navigate to any codebase you want to prepare for remote publishing:
+
+1. **Trigger via Slash Command:**
+   ```text
+   /repo-push
+   ```
+2. **Or ask your coding agent in natural language:**
+   > *"Run repo-push on this repository to audit, sanitize, and prepare it for GitHub."*
+   > *"Perform an adversarial pre-push review on this codebase."*
+
+3. **Follow the Autonomous Verification Gates:**
+   - **Phase 1 (README Gate):** The Orchestrator verifies your `README.md` against intended functionality and prompts for confirmation. (If missing, `explorer` and `documenter` collaborate to draft one).
+   - **Phase 2 (Adversarial Loop):** The `auditor` generates and executes on-demand inspection scripts in `.audit/.scratch/` (AST stubs, dependencies, path/IP leaks, doc drift, secrets). The `remediator` fixes all issues in code.
+   - **Phase 3 (Certification & Push):** The Orchestrator produces a 100/100 publication readiness certificate and stages clean Git commits ready for `git push`.
+
+---
+
 ## 🛡️ In-Memory Behavioral Isolation Contracts
 
 To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator enforces strict behavioral isolation contracts directly **in-memory** during subagent invocation.
