@@ -79,8 +79,8 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │       ├── SKILL.md                           # Master multi-agent orchestrator runbook
 │       │
 │       ├── templates/                         # Production-grade templates
-│       │   ├── agents/                        # Behavioral contracts (agent_01..04.md)
-│       │   ├── audit/                         # agent_03_report & final_report templates
+│       │   ├── agents/                        # Behavioral contracts (explorer.md, documenter.md, auditor.md, remediator.md)
+│       │   ├── audit/                         # auditor_report & final_report templates
 │       │   ├── gitignore/                     # Node, Python, Go, Rust, Universal
 │       │   ├── docs/                          # README, CONTRIBUTING, SECURITY, EditorConfig
 │       │   ├── github/                        # Workflows, Issue & PR templates, Dependabot
