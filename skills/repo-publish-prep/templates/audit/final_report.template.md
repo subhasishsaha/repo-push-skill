@@ -11,7 +11,7 @@
 
 This codebase has passed all adversarial checks across the 3-phase verification gate:
 - ✅ **Phase 1 (README Ground Truth):** `README.md` verified with user; zero documentation drift.
-- ✅ **Phase 2 (Implementation Integrity):** Agent 03 & Agent 04 completed closed-loop remediation with zero remaining blockers.
+- ✅ **Phase 2 (Implementation Integrity):** Auditor & Remediator completed closed-loop remediation with zero remaining blockers.
 - ✅ **Phase 3 (Final Verification):** All dependencies, syntax, paths, and secret gates pass.
 
 ---
@@ -20,7 +20,7 @@ This codebase has passed all adversarial checks across the 3-phase verification 
 
 | Verification Pillar | Initial State | Final State | Verification Method |
 | :--- | :---: | :---: | :--- |
-| **README Ground Truth** | {{INITIAL_README_STATE}} | Verified Accurate | User Confirmation & Agent 02 Draft |
+| **README Ground Truth** | {{INITIAL_README_STATE}} | Verified Accurate | User Confirmation & Documenter Draft |
 | **Secrets & Credentials** | {{INITIAL_SECRET_COUNT}} Issues | **0 Issues** | Static Token & Credential Scanner |
 | **Eagerness Bias & Stubs** | {{INITIAL_STUB_COUNT}} Stubs | **0 Stubs** | AST Empty Function & Stub Scanner |
 | **Dependency Declarations** | {{INITIAL_DEP_COUNT}} Undeclared | **0 Undeclared** | AST Import vs Manifest Checker |

@@ -5,19 +5,19 @@
 
 **`repo-publish-prep`** is an orchestrator-driven multi-agent verification protocol and developer toolkit designed to audit, sanitize, package, and standardize codebases before pushing or publishing to **GitHub, GitLab, Bitbucket**, or other remote Git hosting platforms.
 
-The primary coordinator acts as the **Orchestrator**, actively spawning and managing dedicated subagents (`agent_01`, `agent_02`, `agent_03`, `agent_04`).
+The primary coordinator acts as the **Orchestrator**, actively spawning and managing dedicated subagents (`explorer`, `documenter`, `auditor`, `remediator`).
 
 ---
 
 ## 🛡️ Behavioral Isolation Contracts (`.audit/.agents/`)
 
-To prevent subagents from overstepping their scope—such as **Agent 04 editing Agent 03's audit report** instead of fixing the application code—the Orchestrator enforces strict behavioral contracts stored in `.audit/.agents/`:
-- **`agent_01.md`**: Permitted writes: `.audit/reports/agent_01_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
-- **`agent_02.md`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
-- **`agent_03.md`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/agent_03_report.md`. Forbidden: ANY application code or `README.md`.
-- **`agent_04.md`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `agent_03_report.md` AND `final_report.md`)!** All audit reports are strictly owned by Agent 03 and the Orchestrator.
+To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator enforces strict behavioral contracts stored in `.audit/.agents/`:
+- **`explorer.md`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
+- **`documenter.md`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
+- **`auditor.md`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
+- **`remediator.md`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!** All audit reports are strictly owned by the auditor and the Orchestrator.
 
-The Orchestrator injects the exact behavioral contract from `.audit/.agents/agent_XX.md` into each subagent's system prompt and task instructions.
+The Orchestrator injects the exact behavioral contract from `.audit/.agents/<role>.md` into each subagent's system prompt and task instructions.
 
 ---
 
@@ -32,16 +32,16 @@ flowchart TD
     VerifyUser -->|Drifted| Halt["🛑 Halt execution & ask user for clarification"]
     VerifyUser -->|Verified| Phase2["Phase 2: Adversarial Audit"]
 
-    CheckReadme -->|No| A1["Agent 01: Code Archeologist (Explores codebase, never writes README)"]
-    A1 --> A2["Agent 02: Independent Verifier (Verifies findings line-by-line, writes README)"]
-    A2 -->|Discrepancy| A1
-    A2 -->|Verified| ConfirmUser["User Confirms Generated README"] --> Phase2
+    CheckReadme -->|No| Exp["Explorer: Code Archeologist (Explores codebase, writes explorer_report.md)"]
+    Exp --> Doc["Documenter: Independent Verifier (Verifies findings line-by-line, writes README)"]
+    Doc -->|Discrepancy| Exp
+    Doc -->|Verified| ConfirmUser["User Confirms Generated README"] --> Phase2
 
-    Phase2 --> A3["Agent 03: Adversarial Auditor\nCreates dynamic scripts in .audit/.scratch/\nWrites to .audit/reports/agent_03_report.md"]
-    A3 --> CheckBlockers{"Any blockers / issues?"}
+    Phase2 --> Aud["Auditor: Adversarial Auditor\nCreates dynamic scripts in .audit/.scratch/\nWrites to .audit/reports/auditor_report.md"]
+    Aud --> CheckBlockers{"Any blockers / issues?"}
     CheckBlockers -->|No| Phase3["Phase 3: Final Certification"]
-    CheckBlockers -->|Yes| A4["Agent 04: Remediation Engineer\nImplements real, un-stubbed fixes in code\n(NEVER touches .audit/reports/)"]
-    A4 -->|Returns control| A3
+    CheckBlockers -->|Yes| Rem["Remediator: Remediation Engineer\nImplements real, un-stubbed fixes in code\n(NEVER touches .audit/reports/)"]
+    Rem -->|Returns control| Aud
 
     Phase3 --> FinalReport["Generates .audit/reports/final_report.md\nStages clean Git commit"]
 ```

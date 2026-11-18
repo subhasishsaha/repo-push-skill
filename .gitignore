@@ -21,8 +21,11 @@ dist/
 
 # Scratch and Logs
 *.log
+*.lock
 scratch/
 tmp/
+.agents/
+.memory/
 
 # Audit outputs
 .audit/*

@@ -1,4 +1,4 @@
-# 🕵️ Agent 03 Codebase Verification & Irregularities Report
+# 🕵️ Auditor Codebase Verification & Irregularities Report
 
 - **Target Repository:** `{{REPO_PATH}}`
 - **Audit Date:** `{{AUDIT_TIMESTAMP}}`
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Agent 03 completed an adversarial inspection of the codebase against the verified `README.md` and codebase invariants.
+The `auditor` completed an adversarial inspection of the codebase against the verified `README.md` and codebase invariants.
 
 | Irregularity Category | Severity | Findings Count | Status |
 | :--- | :---: | :---: | :---: |
@@ -24,13 +24,13 @@ Agent 03 completed an adversarial inspection of the codebase against the verifie
 
 ## 2. Irregularity Triage Matrix
 
-| ID | Category | Severity | Location | Issue Description | Remediation Plan for Agent 04 |
+| ID | Category | Severity | Location | Issue Description | Remediation Plan for Remediator |
 | :---: | :--- | :---: | :--- | :--- | :--- |
 {{FINDINGS_TABLE_ROWS}}
 
 ---
 
-## 3. Action Items for Agent 04 (Remediation Engineer)
+## 3. Action Items for Remediator (Remediation Engineer)
 
 {{DETAILED_ACTION_ITEMS}}
 
@@ -38,10 +38,10 @@ Agent 03 completed an adversarial inspection of the codebase against the verifie
 
 ## 4. Verification Protocol for Next Iteration
 
-1. **Agent 04** implements the exact remediation plans above without stubbing or skipping tests.
-2. Control is handed back to **Agent 03**.
-3. **Agent 03** re-executes dynamic scratch audit scripts in `.audit/.scratch/`:
+1. **Remediator** implements the exact remediation plans above without stubbing or skipping tests.
+2. Control is handed back to **Auditor**.
+3. **Auditor** re-executes dynamic scratch audit scripts in `.audit/.scratch/`:
    ```bash
    python .audit/.scratch/run_full_adversarial_audit.py
    ```
-4. If findings count reaches 0 blockers, Agent 03 issues certification to proceed to Phase 3.
+4. If findings count reaches 0 blockers, Auditor issues certification to proceed to Phase 3.
