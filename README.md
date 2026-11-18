@@ -121,7 +121,7 @@ actions:
 
 - **Zero-Touch Setup:** When you already have a `git remote`, `repo-push` generates `config.yaml` automatically.
 - **Strict Cross-Validation (`ACT-001`):** Prevents dead code by ensuring every platform referenced in `actions.yaml` is actively defined in `config.yaml`.
-- **Pristine Local Branches:** Exclusion filtering happens via ephemeral Git release trees—your local working copy and local `main` branch stay 100% untouched.
+- **Pristine Local Branches:** Exclusion filtering happens via isolated Git worktrees (`git worktree add`)—your local working directory and active branch remain 100% untouched.
 
 ---
 
@@ -201,6 +201,14 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   ├── repo-push.schema.json                  # Schema for config.yaml
 │   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
+├── tests/                                     # Automated test suite (21 unit & integration tests)
+│   ├── test_isolation.py                      # Fail-closed behavioral isolation tests
+│   ├── test_config_validator.py               # Schema and URL cross-validation tests
+│   ├── test_config_generator.py               # Deterministic config generator tests
+│   ├── test_schema_validation.py              # JSON Schema syntax tests
+│   ├── test_git_publishing.py                 # Isolated worktree publishing tests
+│   └── test_audit_runner.py                   # 6-Gate verification & AST/secret masking tests
+│
 ├── skills/
 │   └── repo-push/
 │       ├── SKILL.md                           # Master multi-agent orchestrator runbook
@@ -208,7 +216,9 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │       ├── scripts/                           # Deterministic zero-dependency tooling
 │       │   ├── generate_config.py             # Deterministic remote & platform discovery
 │       │   ├── validate_config.py             # Zero-dependency YAML validator & cross-referencer
-│       │   └── enforce_isolation.py           # OS file locking & SHA-256 tamper verification
+│       │   ├── enforce_isolation.py           # OS file locking & SHA-256 tamper verification
+│       │   ├── git_publisher.py               # Isolated git worktree publisher with concurrency lock
+│       │   └── audit_runner.py                # 6-Gate evidence-based verification engine
 │       │
 │       ├── schemas/                           # Bundled JSON schemas
 │       │   ├── repo-push.schema.json

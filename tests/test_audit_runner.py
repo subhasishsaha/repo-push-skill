@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""
+Unit tests for skills/repo-push/scripts/audit_runner.py.
+Tests:
+- Abstract methods and Protocol classes are not falsely flagged as stubs.
+- Concrete stub functions are correctly identified.
+- Token masking prevents credential leakage in reports.
+- Machine-readable evidence generation and cryptographic digest consistency.
+"""
+import ast
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_PATH = REPO_ROOT / "skills" / "repo-push" / "scripts" / "audit_runner.py"
+
+spec = importlib.util.spec_from_file_location("audit_runner", SCRIPT_PATH)
+audit_runner_mod = importlib.util.module_from_spec(spec)
+sys.modules["audit_runner"] = audit_runner_mod
+spec.loader.exec_module(audit_runner_mod)
+
+AuditRunner = audit_runner_mod.AuditRunner
+mask_token = audit_runner_mod.mask_token
+sha256_digest = audit_runner_mod.sha256_digest
+
+
+class TestAuditRunner(unittest.TestCase):
+    def test_token_masking(self):
+        pat = "ghp_1234567890abcdef1234567890abcdef"
+        masked = mask_token(pat)
+        self.assertEqual(masked, "ghp_****cdef")
+        self.assertNotIn("1234567890abcdef1234567890ab", masked)
+
+        short = "secret1"
+        self.assertEqual(mask_token(short), "****")
+
+    def test_abstract_and_protocol_not_flagged(self):
+        """Interface definitions (ABC, Protocol, @abstractmethod) must not be flagged as stubs."""
+        code = """
+import abc
+from abc import abstractmethod
+from typing import Protocol
+
+class InterfaceContract(abc.ABC):
+    @abstractmethod
+    def must_implement(self):
+        pass
+
+    @abstractmethod
+    def another_stub(self):
+        ...
+
+class GreeterProtocol(Protocol):
+    def greet(self) -> str:
+        ...
+"""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "dummy.py").write_text(code, encoding="utf-8")
+            runner = AuditRunner(repo)
+
+            gate = runner.run_gate_2_ast()
+            self.assertEqual(gate["status"], "PASS")
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertEqual(len(blockers), 0)
+
+    def test_concrete_stub_flagged_as_blocker(self):
+        """Concrete function with only 'pass' or '...' must be flagged as a blocker."""
+        code = """
+class ConcreteService:
+    def execute_payment(self, amount: float):
+        pass
+
+def calculate_tax():
+    ...
+"""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "concrete.py").write_text(code, encoding="utf-8")
+            runner = AuditRunner(repo)
+
+            gate = runner.run_gate_2_ast()
+            self.assertEqual(gate["status"], "FAIL")
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 2)
+
+    def test_cryptographic_digest(self):
+        data = "test-evidence-payload"
+        digest1 = sha256_digest(data)
+        digest2 = sha256_digest(data)
+        self.assertEqual(digest1, digest2)
+        self.assertEqual(len(digest1), 64)
+
+
+if __name__ == "__main__":
+    unittest.main()

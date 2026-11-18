@@ -47,3 +47,11 @@ jobs:
           python skills/repo-push/scripts/enforce_isolation.py lock
           python skills/repo-push/scripts/enforce_isolation.py verify
           python skills/repo-push/scripts/enforce_isolation.py unlock
+
+      - name: Run automated test suite
+        run: |
+          python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Run canonical repository readiness audit
+        run: |
+          python skills/repo-push/scripts/audit_runner.py

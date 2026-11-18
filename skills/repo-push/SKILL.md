@@ -31,15 +31,17 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 ```
 
 1. **Layer 1: In-Memory Prompt Contracts:**  
-   The Orchestrator defines explicit role boundaries and forbidden scopes in each subagent's system prompt (with zero `.audit/.agents/` disk clutter).
+   The Orchestrator defines explicit role boundaries and forbidden scopes in each subagent's system prompt (with zero `.audit/.agents/` disk clutter). Subagents are instructed to treat all repository files as untrusted input to defend against prompt injection.
 2. **Layer 2: Physical OS File Locking:**  
    Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting OS read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) on `.audit/reports/`.
-3. **Layer 3: Cryptographic SHA-256 Verification & Rollback:**  
-   A cryptographic snapshot of `.audit/reports/` is taken prior to remediation. When `remediator` completes, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py verify`. If any unauthorized file creation, modification, or deletion is detected:
-   - The subagent turn is **immediately rejected**.
-   - Changes are rolled back.
+3. **Layer 3: Cryptographic SHA-256 Verification & Fail-Closed Rollback:**  
+   A cryptographic snapshot and physical backup of `.audit/reports/` is stored in an isolated directory (`.audit/.trusted/`) prior to remediation. When `remediator` completes, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py verify-and-restore`. If any unauthorized file creation, modification, deletion, or symlink tampering is detected:
+   - The subagent turn is **immediately rejected (fail-closed)**.
+   - Pristine reports are automatically restored from the trusted backup.
    - A security violation is recorded in the audit log.
    Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
+
+> **Honesty & Boundary Notice**: File permissions and prompt boundaries provide defense-in-depth against unintended modifications. When running agents with system-level privileges, model prompts alone do not form an impenetrable security boundary. True enforcement relies on the cryptographic fail-closed verification and automated rollback.
 
 ---
 
@@ -147,7 +149,7 @@ version: "1.0"
 require_confirmation: true
 
 pre_push:
-  min_readiness_score: 100     # 100/100 required to unlock push
+  require_all_gates: true      # All 6 verification gates must PASS to unlock push
   dry_run: true                # Test auth & branch before actual push
 
 targets:
@@ -292,23 +294,16 @@ actions:
      > *"✅ All verification gates PASSED (6/6). Ready to push to [target(s)]? [Yes / No]"*
    - Execution pauses until user confirms.
 
-5. **Deterministic Git Plumbing for Filtered Push:**
-   To guarantee that the developer's local working copy and local `main` branch stay 100% pristine:
+5. **Deterministic Isolated Git Worktree Publishing:**
+   To guarantee that the developer's working directory, active branch (`main`), index, and uncommitted edits remain 100% untouched and protected against race conditions:
    ```bash
-   # 1. Create an isolated temporary release branch from current HEAD
-   git checkout -b __publish/<target_name>
-
-   # 2. Apply platform exclusions (untrack platform-specific files from this release branch)
-   git rm -r --cached --ignore-unmatch <exclude_patterns...>
-
-   # 3. Create a clean platform-specific release commit
-   git commit -m "publish: release to <target_name> (platform filtered)"
-
-   # 4. Push directly from the temporary branch to the target remote branch
-   git push <remote_name> __publish/<target_name>:<remote_branch>
-
-   # 5. Cleanly return to the original branch and remove the temporary branch
-   git checkout <original_branch>
-   git branch -D __publish/<target_name>
+   python <skill>/scripts/git_publisher.py --target origin --mode history_preserving
    ```
-   Original commit history is preserved, exclusions are cleanly applied to the published branch, and the local workspace never flickers or loses files.
+   **Execution Guarantee & Concurrency Protection:**
+   1. **Concurrency Lock:** Acquires `.audit/.trusted/publishing.lock` preventing overlapping push attempts.
+   2. **Isolated Ephemeral Worktree:** Creates an isolated worktree outside the working directory using `git worktree add -b __publish/<target> <worktree_path> <HEAD>`.
+   3. **Platform Tree Filtering:** Exclusions are cleanly removed inside the isolated worktree without touching the developer's local files.
+   4. **Two Publishing Modes:**
+      - `history_preserving` (default): Applies an exclusion release commit on top of HEAD.
+      - `clean_snapshot`: Creates an orphan commit with clean history for public mirrors.
+   5. **Guaranteed Try/Finally Cleanup:** A structured cleanup block guarantees that worktrees are removed (`git worktree remove --force`), pruned, and temporary branches deleted even if network drops or errors occur. Local files never flicker or disappear from disk.

@@ -164,6 +164,8 @@ def main():
     remotes = detect_remotes()
     branch = detect_current_branch()
 
+    allow_template = "--init" in sys.argv or "--template" in sys.argv
+
     targets = []
     if remotes:
         for name, url in remotes.items():
@@ -183,16 +185,26 @@ def main():
                     "app_file": "app.py"
                 }
             })
-    else:
-        # Fallback minimal target
+    elif allow_template:
+        print("[INFO] No remotes detected. Generating configuration template with placeholders (--init requested).")
         targets.append({
             "name": "origin",
             "platform": "github",
-            "url": "https://github.com/username/repository.git",
+            "url": "https://github.com/REPLACE_WITH_YOUR_ORG/REPLACE_WITH_YOUR_REPO.git",
             "branch": branch,
             "push_tags": True,
             "exclude": EXCLUSIONS_MAP["github"]
         })
+    else:
+        print(
+            "[ERROR] No Git remotes detected in repository.\n"
+            "repo-push will not invent fabricated remote URLs.\n"
+            "Please configure your remote first:\n"
+            "  git remote add origin https://github.com/<owner>/<repo>.git\n"
+            "Or run with '--init' to create an unverified starter template.",
+            file=sys.stderr
+        )
+        return 1
 
     yaml_text = build_yaml_content(targets)
 
