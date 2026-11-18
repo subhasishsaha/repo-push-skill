@@ -3,7 +3,7 @@ version: "1.0"
 require_confirmation: true
 
 pre_push:
-  min_readiness_score: 100
+  require_all_gates: true
   dry_run: true
 
 targets:

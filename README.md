@@ -43,7 +43,7 @@ Navigate to any codebase you want to prepare for remote publishing:
    - **Step 0 (Remote Auto-Discovery & Config):** If `.repo-push/config.yaml` is missing, `repo-push` inspects your existing `git remote -v`, maps platforms (GitHub, GitLab, Hugging Face, Bitbucket), and generates `.repo-push/config.yaml` with canonical mutual exclusion rules deterministically (zero user input required).
    - **Phase 1 (README Gate):** The Orchestrator verifies your `README.md` against intended functionality and prompts for confirmation. (If missing, `explorer` and `documenter` collaborate to draft one).
    - **Phase 2 (Adversarial Loop & Targeted Scaffolding):** The agent only scaffolds CI/workflows for declared target platforms (e.g. only `.github/workflows/` for GitHub; never unwanted `.gitlab-ci.yml`). If `.repo-push/actions.yaml` is present, it compiles declarative action intents into native platform workflows. The `auditor` executes on-demand inspection scripts in `.audit/.scratch/`. The `remediator` fixes all issues in code.
-   - **Phase 3 (Certification & Filtered Remote Push):** Upon reaching a **100/100 readiness score**, the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and pushes cleanly using ephemeral Git tree filtering so platform clutter never cross-contaminates.
+   - **Phase 3 (Certification & Filtered Remote Push):** Upon passing all 6 verification gates (`GATE_1` through `GATE_6`), the agent runs a pre-push dry-run, prompts for explicit confirmation (`Ready to push? [Yes / No]`), and pushes cleanly using ephemeral Git tree filtering so platform clutter never cross-contaminates.
 
 ---
 
@@ -65,7 +65,7 @@ version: "1.0"
 require_confirmation: true
 
 pre_push:
-  min_readiness_score: 100     # Require 100/100 score to unlock push
+  require_all_gates: true      # Require all 6 gates to achieve PASS status
   dry_run: true                # Run git push --dry-run first
 
 targets:
@@ -125,16 +125,18 @@ actions:
 
 ---
 
-## 🛡️ In-Memory Behavioral Isolation Contracts
+## 🛡️ Defense-in-Depth Behavioral Isolation Model
 
-To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator enforces strict behavioral isolation contracts directly **in-memory** during subagent invocation.
+To prevent subagents from overstepping their scope—such as a prompt-injected **`remediator` modifying `auditor`'s report** instead of fixing application code—`repo-push` enforces a **3-Layer Defense-in-Depth Model**:
 
-> **Zero Disk Clutter Guarantee:** No `.audit/.agents/` directory or contract files are copied to disk in target repositories. Contracts are injected directly into subagent system prompts.
+1. **Layer 1 (Prompt Contracts):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter).
+2. **Layer 2 (Physical OS File Locking):** `.audit/reports/` is physically locked with OS read-only attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
+3. **Layer 3 (Cryptographic SHA-256 Verification & Rollback):** A cryptographic digest of all audit reports is recorded prior to remediation. When `remediator` finishes, the Orchestrator verifies that zero unauthorized alterations occurred. If tampered with, the turn is immediately rejected and rolled back.
 
 - **`explorer`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
 - **`documenter`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
 - **`auditor`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
-- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (INCLUDING `auditor_report.md` AND `final_report.md`)!** All audit reports are strictly owned by the auditor and the Orchestrator.
+- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (PHYSICALLY OS-LOCKED AND CRYPTOGRAPHICALLY VERIFIED).**
 
 ---
 

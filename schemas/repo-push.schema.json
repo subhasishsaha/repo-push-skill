@@ -22,8 +22,13 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "require_all_gates": {
+          "description": "Require all critical verification gates to achieve PASS status before remote publishing is unlocked.",
+          "type": "boolean",
+          "default": true
+        },
         "min_readiness_score": {
-          "description": "Minimum adversarial readiness score (0-100) required to unlock remote pushing.",
+          "description": "Legacy compatibility: minimum score (0-100) required to unlock remote pushing.",
           "type": "integer",
           "minimum": 0,
           "maximum": 100,

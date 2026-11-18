@@ -2,51 +2,30 @@
 
 - **Target Repository:** `{{REPO_PATH}}`
 - **Certified At:** `{{TIMESTAMP}}`
-- **Final Readiness Score:** **{{SCORE}} / 100** (`{{STATUS}}`)
+- **Overall Certification Status:** **{{STATUS}}** ({{PASSED_GATES_COUNT}} / 6 Gates Passed)
 - **Total Audit Iterations:** `{{TOTAL_ITERATIONS}}`
 
 ---
 
-## 1. Publication Readiness Verdict
+## 1. Evidence-Based Verification Gate Matrix
 
-This codebase has passed all adversarial checks across the 3-phase verification gate:
-- ✅ **Phase 1 (README Ground Truth):** `README.md` verified with user; zero documentation drift.
-- ✅ **Phase 2 (Implementation Integrity):** Auditor & Remediator completed closed-loop remediation with zero remaining blockers.
-- ✅ **Phase 3 (Final Verification):** All dependencies, syntax, paths, and secret gates pass.
-
----
-
-## 2. Integrity Verification Matrix
-
-| Verification Pillar | Initial State | Final State | Verification Method |
-| :--- | :---: | :---: | :--- |
-| **README Ground Truth** | {{INITIAL_README_STATE}} | Verified Accurate | User Confirmation & Documenter Draft |
-| **Secrets & Credentials** | {{INITIAL_SECRET_COUNT}} Issues | **0 Issues** | Static Token & Credential Scanner |
-| **Eagerness Bias & Stubs** | {{INITIAL_STUB_COUNT}} Stubs | **0 Stubs** | AST Empty Function & Stub Scanner |
-| **Dependency Declarations** | {{INITIAL_DEP_COUNT}} Undeclared | **0 Undeclared** | AST Import vs Manifest Checker |
-| **Local Path Leaks** | {{INITIAL_PATH_COUNT}} Leaks | **0 Leaks** | OS User Path & IP Address Scanner |
-| **Doc-to-Code Drift** | {{INITIAL_DRIFT_COUNT}} Drift Items | **0 Drift Items** | Markdown Link & Entrypoint Validator |
-| **Git Working Tree** | Dirty / Unchecked | **Clean & Staged** | Git Index & Status Audit |
+| Gate | Verification Scope | Status | Verification Method |
+| :--- | :--- | :---: | :--- |
+| **GATE 1: HYGIENE** | README truth, License, complete `.gitignore`, clean Git index | `{{GATE_1_STATUS}}` | Deterministic Git index & filesystem check |
+| **GATE 2: AST INTEGRITY** | Zero stubs, complete functions, no `NotImplementedError` | `{{GATE_2_STATUS}}` | Static AST syntax tree analysis |
+| **GATE 3: DEPENDENCIES** | All imported packages declared in manifest files | `{{GATE_3_STATUS}}` | AST import vs manifest checker |
+| **GATE 4: SECRETS & LEAKS** | Zero active keys or historical commit secrets | `{{GATE_4_STATUS}}` | Working tree + `git log -p` commit scanner |
+| **GATE 5: CONFIG VALIDATION** | `.repo-push/config.yaml` schema validity | `{{GATE_5_STATUS}}` | `validate_config.py` JSON Schema engine |
+| **GATE 6: ACTIONS CONSISTENCY** | Strict remote-to-workflow cross-validation (`ACT-001`) | `{{GATE_6_STATUS}}` | Cross-referencing validator |
 
 ---
 
-## 3. Remediated Files Ledger
+## 2. Remediated Files Ledger
 
 {{REMEDIATED_FILES_LIST}}
 
 ---
 
-## 4. Remote Push Instructions for User
+## 3. Remote Publishing & Push Execution
 
-Your codebase is in pristine, publication-ready condition. To publish to your Git host:
-
-```bash
-# 1. Review staged commit
-git status
-
-# 2. Add your remote origin (if not already set)
-git remote add origin https://github.com/<your-org>/<your-repo>.git
-
-# 3. Push to main branch
-git push -u origin main
-```
+{{PUSH_VERDICT_AND_INSTRUCTIONS}}

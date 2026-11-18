@@ -59,7 +59,9 @@ def parse_simple_yaml(text):
                 k, v = stripped.split(":", 1)
                 k = k.strip()
                 v = v.strip()
-                if k == "min_readiness_score":
+                if k == "require_all_gates":
+                    data["pre_push"][k] = (v.lower() == "true")
+                elif k == "min_readiness_score":
                     try:
                         data["pre_push"][k] = int(v)
                     except ValueError:

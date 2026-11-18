@@ -16,11 +16,30 @@ The primary coordinator acts as the **Orchestrator**. It does not perform audits
 
 ---
 
-## 🛡️ In-Memory Behavioral Isolation Contracts
+## 🛡️ Defense-in-Depth Behavioral Isolation Model
 
-To prevent subagents from overstepping their scope—such as **`remediator` editing `auditor`'s report** instead of fixing the application code—the Orchestrator injects strict behavioral isolation contracts directly **in-memory** into each subagent's system prompt.
+To prevent subagents from overstepping their scope—such as a prompt-injected **`remediator` editing `auditor`'s report** instead of fixing the application code—the system does **not** rely solely on system prompt instructions. It implements a **3-Layer Defense-in-Depth Model**:
 
-> **Zero Disk Clutter Guarantee:** No `.audit/.agents/` folder or contract files are written to disk in target repositories. The Orchestrator injects the contracts directly when calling `define_subagent` and `invoke_subagent`.
+```text
+┌────────────────────────────────────────────────────────┐
+│ Layer 1: Prompt Contract (In-Memory System Prompt)     │ ◄── Behavioral boundary
+├────────────────────────────────────────────────────────┤
+│ Layer 2: OS File-Lock Barrier (Read-Only OS Attribute) │ ◄── Physical filesystem block
+├────────────────────────────────────────────────────────┤
+│ Layer 3: Cryptographic Diff Verification & Rollback    │ ◄── Automated rollback on breach
+└────────────────────────────────────────────────────────┘
+```
+
+1. **Layer 1: In-Memory Prompt Contracts:**  
+   The Orchestrator defines explicit role boundaries and forbidden scopes in each subagent's system prompt (with zero `.audit/.agents/` disk clutter).
+2. **Layer 2: Physical OS File Locking:**  
+   Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting OS read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) on `.audit/reports/`.
+3. **Layer 3: Cryptographic SHA-256 Verification & Rollback:**  
+   A cryptographic snapshot of `.audit/reports/` is taken prior to remediation. When `remediator` completes, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py verify`. If any unauthorized file creation, modification, or deletion is detected:
+   - The subagent turn is **immediately rejected**.
+   - Changes are rolled back.
+   - A security violation is recorded in the audit log.
+   Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
 
 ---
 
@@ -62,16 +81,21 @@ flowchart TD
 
 ---
 
-## 🛠️ Dynamic Scripting Workspace: `.audit/.scratch/`
+## 🛠️ Dynamic Scripting Workspace & Safe Execution: `.audit/.scratch/`
 
-Instead of brittle static scripts, subagents write purpose-built scripts directly in `.audit/.scratch/`:
-- **`explorer`** writes dynamic AST inspection or entrypoint discovery scripts in `.audit/.scratch/` to explore unknown repos.
-- **`auditor`** writes specialized Python, Node, or Shell scripts in `.audit/.scratch/` to test:
-  1. Stubs, empty functions (`pass`, `...`), and `raise NotImplementedError`.
-  2. Imports vs manifests (`package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`).
-  3. Absolute paths (`C:\Users\...`, `/home/...`) and internal private IPs.
-  4. Broken relative Markdown links and documented entrypoints.
-- `.audit/` (including `.audit/.scratch/`) is ignored in `.gitignore` so temporary audit scripts never dirty the repository.
+Instead of brittle static scripts, subagents write purpose-built inspection scripts directly in `.audit/.scratch/`. To guarantee safety when inspecting untrusted or third-party repositories, the following strict execution rules are enforced:
+
+1. **Static AST Analysis Mandate (Zero Untrusted Execution):**
+   - Inspection scripts MUST use static AST parsing (`ast.parse()` in Python, Babel/ESprima in Node.js).
+   - **CRITICAL SECURITY RULE:** Scripts MUST NEVER use `import`, `__import__`, `importlib.import_module()`, `eval()`, or `exec()` on application source files. Code is analyzed strictly as static syntax trees, preventing untrusted `__init__.py` or module code from ever running.
+2. **Directory Isolation:**
+   - Audit scripts can ONLY write temporary result files inside `.audit/.scratch/` (e.g. `results_*.json`).
+   - Source code files are treated as strictly read-only.
+3. **Execution Sandbox & Network Isolation:**
+   - All audit scripts execute in standard sandbox mode with zero network access and explicit subprocess execution timeouts.
+   - Sensitive environment variables (API keys, personal tokens) are stripped from audit subprocesses.
+4. **Git Isolation:**
+   - `.audit/` (including `.audit/.scratch/`) is ignored in `.gitignore` so temporary audit scripts never dirty the repository.
 
 ---
 
@@ -239,21 +263,52 @@ actions:
 
 ---
 
-### Phase 3: Final Certification & Remote Push Protocol
-1. **Generate Certification Ledger:**
-   - When the `auditor` confirms 0 blockers remain (100/100 score), Orchestrator compiles and writes:
+### Phase 3: Evidence-Based Certification & Remote Push Protocol
+
+1. **Evidence-Based Gate Verification Matrix:**
+   - Certification is unlocked only when all 6 critical verification gates achieve **`PASS`** status:
+     - `GATE_1_HYGIENE`: Repository hygiene, README truth, License, complete `.gitignore`, clean Git index.
+     - `GATE_2_AST_INTEGRITY`: Zero stubs, complete functions, no `NotImplementedError` or ellipsis placeholders in production code.
+     - `GATE_3_DEPENDENCIES`: Manifest parity (all imports declared in manifests; manifests parse cleanly).
+     - `GATE_4_SECRETS_AND_LEAKS`: Zero active or historical secrets (active working tree + full `git log -p` commit history scanned).
+     - `GATE_5_CONFIG_VALIDATION`: `.repo-push/config.yaml` schema compliance and remote target validity.
+     - `GATE_6_ACTIONS_CONSISTENCY`: Strict cross-validation (`ACT-001`) between `actions.yaml` and declared remotes.
+   - When all gates pass, Orchestrator compiles and writes:
      ```text
      .audit/reports/final_report.md
      ```
      Adhering to [templates/audit/final_report.template.md](./templates/audit/final_report.template.md).
-2. **Pre-Push Dry-Run & Validation:**
-   - Orchestrator reads `.repo-push.yaml`.
-   - Runs `git push --dry-run` against each target to verify network connectivity, remote credentials, and branch access.
-3. **Explicit User Confirmation Gate (Safety-First):**
+
+2. **Crucial Distinction: Git History Sanitization vs. Tree Filtering:**
+   - **Exclusion filtering** in `.repo-push/config.yaml` is strictly for **platform file separation** (e.g. keeping `.gitlab-ci.yml` off GitHub).
+   - **Exclusions DO NOT sanitize past Git history.** Credential protection is handled by **Gate 4**, which scans all reachable commit diffs (`git log -p`) to guarantee no secrets exist in historical commits before any push is permitted.
+
+3. **Pre-Push Dry-Run & Validation:**
+   - Orchestrator reads `.repo-push/config.yaml`.
+   - Runs `git push --dry-run` against each target remote to verify network connectivity, remote credentials, and branch access.
+
+4. **Explicit User Confirmation Gate (Safety-First):**
    - If `require_confirmation: true` (default), prompt the user:
-     > *"✅ Codebase certified (100/100). Ready to push to [target(s)]? [Yes / No]"*
+     > *"✅ All verification gates PASSED (6/6). Ready to push to [target(s)]? [Yes / No]"*
    - Execution pauses until user confirms.
-4. **Platform-Filtered Push Execution:**
-   - For targets with `exclude` patterns, the agent pushes via an ephemeral Git tree / temporary release commit so that platform-specific files never cross-contaminate.
-   - **The developer's local working copy and local `main` branch remain 100% untouched.**
-   - Pushes cleanly to all declared target remotes and reports confirmation.
+
+5. **Deterministic Git Plumbing for Filtered Push:**
+   To guarantee that the developer's local working copy and local `main` branch stay 100% pristine:
+   ```bash
+   # 1. Create an isolated temporary release branch from current HEAD
+   git checkout -b __publish/<target_name>
+
+   # 2. Apply platform exclusions (untrack platform-specific files from this release branch)
+   git rm -r --cached --ignore-unmatch <exclude_patterns...>
+
+   # 3. Create a clean platform-specific release commit
+   git commit -m "publish: release to <target_name> (platform filtered)"
+
+   # 4. Push directly from the temporary branch to the target remote branch
+   git push <remote_name> __publish/<target_name>:<remote_branch>
+
+   # 5. Cleanly return to the original branch and remove the temporary branch
+   git checkout <original_branch>
+   git branch -D __publish/<target_name>
+   ```
+   Original commit history is preserved, exclusions are cleanly applied to the published branch, and the local workspace never flickers or loses files.

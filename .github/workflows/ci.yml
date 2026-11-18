@@ -28,5 +28,22 @@ jobs:
       - name: Verify skill structure and templates
         run: |
           python -c "import json, pathlib; json.loads(pathlib.Path('plugin.json').read_text())"
+          python -c "import json, pathlib; json.loads(pathlib.Path('schemas/repo-push.schema.json').read_text())"
+          python -c "import json, pathlib; json.loads(pathlib.Path('schemas/repo-push-actions.schema.json').read_text())"
           test -f skills/repo-push/SKILL.md || exit 1
           test -f README.md || exit 1
+
+      - name: Test configuration validation script
+        run: |
+          python skills/repo-push/scripts/validate_config.py
+
+      - name: Test deterministic configuration generator
+        run: |
+          python skills/repo-push/scripts/generate_config.py --dry-run
+
+      - name: Test behavioral isolation enforcement script
+        run: |
+          python skills/repo-push/scripts/enforce_isolation.py snapshot
+          python skills/repo-push/scripts/enforce_isolation.py lock
+          python skills/repo-push/scripts/enforce_isolation.py verify
+          python skills/repo-push/scripts/enforce_isolation.py unlock

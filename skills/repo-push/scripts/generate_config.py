@@ -102,7 +102,7 @@ def build_yaml_content(targets, require_confirmation=True):
         f"require_confirmation: {'true' if require_confirmation else 'false'}",
         "",
         "pre_push:",
-        "  min_readiness_score: 100",
+        "  require_all_gates: true",
         "  dry_run: true",
         "",
         "targets:",

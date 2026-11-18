@@ -2,23 +2,21 @@
 
 - **Target Repository:** `{{REPO_PATH}}`
 - **Audit Date:** `{{AUDIT_TIMESTAMP}}`
-- **Readiness Score:** **{{SCORE}} / 100** (`{{STATUS}}`)
+- **Verification Status:** **{{STATUS}}** ({{PASSED_GATES_COUNT}} / 6 Gates Passed)
 - **Iteration:** `{{ITERATION_NUMBER}}`
 
 ---
 
-## 1. Executive Summary
+## 1. Evidence-Based Verification Gate Matrix
 
-The `auditor` completed an adversarial inspection of the codebase against the verified `README.md` and codebase invariants.
-
-| Irregularity Category | Severity | Findings Count | Status |
-| :--- | :---: | :---: | :---: |
-| **Eagerness Bias & Stubs** | 🛑 BLOCKER | {{STUB_COUNT}} | {{STUB_STATUS}} |
-| **Dependency Manifest Mismatch** | 🛑 BLOCKER | {{DEP_COUNT}} | {{DEP_STATUS}} |
-| **Local Environment & Path Leaks** | 🛑 BLOCKER | {{PATH_COUNT}} | {{PATH_STATUS}} |
-| **Document-to-Code Drift** | 🛑 BLOCKER | {{DRIFT_COUNT}} | {{DRIFT_STATUS}} |
-| **Naming & Code Cleanliness** | ⚠️ WARNING | {{CLEAN_COUNT}} | {{CLEAN_STATUS}} |
-| **Secret Leaks & Credential Hygiene** | 🛑 BLOCKER | {{SECRET_COUNT}} | {{SECRET_STATUS}} |
+| Gate | Category / Scope | Status | Findings |
+| :--- | :--- | :---: | :---: |
+| **GATE 1: HYGIENE** | Repository hygiene, README truth, License, .gitignore | `{{GATE_1_STATUS}}` | {{HYGIENE_ISSUES_COUNT}} |
+| **GATE 2: AST INTEGRITY** | Stubs, NotImplementedError, placeholder ellipsis | `{{GATE_2_STATUS}}` | {{STUB_COUNT}} |
+| **GATE 3: DEPENDENCIES** | Manifest declarations vs imported modules | `{{GATE_3_STATUS}}` | {{DEP_COUNT}} |
+| **GATE 4: SECRETS & LEAKS** | Hardcoded tokens, developer paths, commit history | `{{GATE_4_STATUS}}` | {{SECRET_COUNT}} |
+| **GATE 5: CONFIG VALIDATION** | `.repo-push/config.yaml` schema compliance | `{{GATE_5_STATUS}}` | {{CONFIG_ISSUES_COUNT}} |
+| **GATE 6: ACTIONS CONSISTENCY** | Cross-validation between actions and remotes | `{{GATE_6_STATUS}}` | {{ACTION_ISSUES_COUNT}} |
 
 ---
 
