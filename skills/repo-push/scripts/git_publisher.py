@@ -4,43 +4,79 @@ git_publisher.py — Safe, Deterministic Multi-Platform Git Publishing Engine
 
 Implements an isolated, worktree-based publishing pipeline that:
 1. NEVER modifies the user's active branch, working tree, or index.
-2. Supports two explicit publishing modes:
-   - 'history_preserving' (default): Preserves full commit history, applying exclusions as a release commit.
+2. Uses atomic OS-level exclusive file locking (O_CREAT | O_EXCL) to prevent concurrency races.
+3. Supports two explicit publishing modes:
+   - 'history_preserving' (default): Preserves full commit history; filters release tree atop HEAD.
    - 'clean_snapshot': Creates an isolated single-commit snapshot with zero past history.
-3. Uses collision-resistant temporary references (UUID-based).
-4. Enforces guaranteed cleanup via try/finally (even on failure, interrupt, or error).
-5. Safe argument arrays (no shell string interpolation).
+4. Forbids historical tags in 'clean_snapshot' mode to prevent history leakage through refs.
+5. Verifies resulting tree against exclusion policy before executing push.
+6. Enforces guaranteed worktree and branch cleanup with transparent error reporting.
 """
 
 import argparse
+import fnmatch
 import os
 import shutil
 import subprocess
 import sys
 import uuid
 
-LOCK_FILE = os.path.abspath(os.path.join(".audit", ".trusted", "publishing.lock"))
+DEFAULT_LOCK_FILE = os.path.abspath(os.path.join(".audit", ".trusted", "publishing.lock"))
 
 
 class PublishingLock:
-    """Guarantees mutually exclusive publishing operations."""
+    """Atomic mutual exclusion lock for publishing operations."""
+    def __init__(self, lock_file=DEFAULT_LOCK_FILE):
+        self.lock_file = lock_file
+        self.fd = None
+
     def __enter__(self):
-        os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
-        if os.path.exists(LOCK_FILE):
+        os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
+        try:
+            # Atomic exclusive file creation
+            self.fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(self.fd, f"{os.getpid()}\n".encode("utf-8"))
+        except FileExistsError:
+            # Check for stale lock
+            stale = False
             try:
-                with open(LOCK_FILE, "r", encoding="utf-8") as f:
-                    pid = f.read().strip()
-                raise RuntimeError(f"Concurrent publishing operation detected (Lock held by PID {pid}). Aborting.")
+                with open(self.lock_file, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                pid = int(content) if content.isdigit() else None
+                if pid:
+                    if os.name == "nt":
+                        res = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
+                        if f"{pid}" not in res.stdout:
+                            stale = True
+                    else:
+                        try:
+                            os.kill(pid, 0)
+                        except OSError:
+                            stale = True
             except Exception:
-                raise RuntimeError("Publishing lock file exists. Another publish operation may be active.")
-        with open(LOCK_FILE, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
+                pass
+
+            if stale:
+                try:
+                    os.remove(self.lock_file)
+                    self.fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(self.fd, f"{os.getpid()}\n".encode("utf-8"))
+                    return self
+                except Exception:
+                    pass
+            raise RuntimeError(f"Concurrent publishing operation detected (Lock held at '{self.lock_file}'). Aborting.")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if os.path.exists(LOCK_FILE):
+        if self.fd is not None:
             try:
-                os.remove(LOCK_FILE)
+                os.close(self.fd)
+            except Exception:
+                pass
+            self.fd = None
+        if os.path.exists(self.lock_file):
+            try:
+                os.remove(self.lock_file)
             except Exception:
                 pass
 
@@ -60,21 +96,52 @@ def git_cmd(args, cwd=None, check=True):
     return res
 
 
-def get_current_commit():
+def get_current_commit(cwd=None):
     """Returns current HEAD commit SHA, or raises if no commits exist."""
-    res = git_cmd(["rev-parse", "HEAD"], check=False)
+    res = git_cmd(["rev-parse", "HEAD"], cwd=cwd, check=False)
     if res.returncode != 0:
         raise RuntimeError("Repository has no commits. Create at least one commit before publishing.")
     return res.stdout.strip()
 
 
-def validate_remote(remote_name):
-    """Verifies that the remote exists in git remote -v."""
-    res = git_cmd(["remote"], check=False)
+def validate_remote(remote_name, expected_url=None, cwd=None):
+    """Verifies that the remote exists and optionally checks push URL match."""
+    res = git_cmd(["remote"], cwd=cwd, check=False)
     remotes = [r.strip() for r in res.stdout.splitlines() if r.strip()]
     if remote_name not in remotes:
         raise ValueError(f"Remote '{remote_name}' does not exist. Configured remotes: {remotes}")
+
+    if expected_url:
+        url_res = git_cmd(["remote", "get-url", "--push", remote_name], cwd=cwd, check=False)
+        actual_url = url_res.stdout.strip()
+        if actual_url and actual_url != expected_url:
+            raise ValueError(f"Remote push URL mismatch for '{remote_name}': expected '{expected_url}', but git remote is configured with '{actual_url}'.")
     return True
+
+
+def validate_target_branch(branch_name, cwd=None):
+    """Validates target branch name using Git ref-format rules."""
+    res = git_cmd(["check-ref-format", "--branch", branch_name], cwd=cwd, check=False)
+    if res.returncode != 0:
+        raise ValueError(f"Invalid Git branch name '{branch_name}': violates ref-format rules.")
+    return True
+
+
+def verify_tree_exclusions(worktree_dir, exclude_patterns):
+    """Verifies that no excluded patterns remain in the published tree."""
+    if not exclude_patterns:
+        return
+    res = git_cmd(["ls-files"], cwd=worktree_dir)
+    tracked_files = [f.strip() for f in res.stdout.splitlines() if f.strip()]
+    
+    violated = []
+    for pat in exclude_patterns:
+        pat_clean = pat.rstrip("/\\")
+        for f in tracked_files:
+            if fnmatch.fnmatch(f, pat) or f == pat_clean or f.startswith(pat_clean + "/"):
+                violated.append(f)
+    if violated:
+        raise RuntimeError(f"Exclusion verification FAILED! Excluded files still present in published tree: {violated}")
 
 
 def publish_target(
@@ -83,7 +150,9 @@ def publish_target(
     mode="history_preserving",
     exclude_patterns=None,
     push_tags=False,
-    dry_run=False
+    dry_run=False,
+    expected_url=None,
+    cwd=None
 ):
     """
     Publishes the repository to a target remote using an isolated Git worktree.
@@ -92,41 +161,57 @@ def publish_target(
     if exclude_patterns is None:
         exclude_patterns = []
 
-    # Validate all exclusion patterns upfront before allocating any Git resources
+    # 1. Input validations
     for pat in exclude_patterns:
         if pat in ("/", "\\", ".", "*") or ".." in pat:
             raise ValueError(f"Dangerous exclusion pattern rejected: '{pat}'")
 
-    validate_remote(remote_name)
-    head_commit = get_current_commit()
+    validate_target_branch(target_branch, cwd=cwd)
+    validate_remote(remote_name, expected_url=expected_url, cwd=cwd)
+    head_commit = get_current_commit(cwd=cwd)
+
+    # 2. Tag leak defense: Clean snapshot must not push historical tags
+    if mode == "clean_snapshot" and push_tags:
+        raise ValueError(
+            "Pushing global tags with '--tags' is forbidden in 'clean_snapshot' mode. "
+            "Existing repository tags point to previous commits containing excluded history. "
+            "To publish tags on a clean snapshot, tag the snapshot commit directly after publishing."
+        )
+
+    # 3. Print operational notices
+    print(f"\n[GIT PUBLISHER] Target: '{remote_name}' (branch: '{target_branch}', mode: '{mode}')")
+    if mode == "history_preserving":
+        print("[NOTICE] Mode 'history_preserving': Exclusions are removed from the latest release commit only. Historical commits in ancestry still contain earlier revisions.")
+    elif mode == "clean_snapshot":
+        print("[NOTICE] Mode 'clean_snapshot': Publishing an isolated orphan commit with zero prior history.")
+
+    if dry_run:
+        print("[NOTICE] DRY-RUN MODE: Simulating push; remote refs will not be updated.")
 
     run_id = uuid.uuid4().hex[:8]
     temp_branch = f"__repo_push_pub_{run_id}"
-    worktree_dir = os.path.abspath(os.path.join(".audit", ".scratch", "worktrees", f"wt_{run_id}"))
+    base_dir = cwd if cwd else os.path.abspath(".")
+    worktree_dir = os.path.join(base_dir, ".audit", ".scratch", "worktrees", f"wt_{run_id}")
 
-    print(f"\n[GIT PUBLISHER] Target: '{remote_name}' (branch: '{target_branch}', mode: '{mode}')")
-    if dry_run:
-        print("[GIT PUBLISHER] DRY-RUN MODE: No network pushes will be executed.")
+    # Ensure temp branch does not already exist
+    check_branch = git_cmd(["rev-parse", "--verify", "--quiet", f"refs/heads/{temp_branch}"], cwd=cwd, check=False)
+    if check_branch.returncode == 0:
+        raise RuntimeError(f"Temporary reference '{temp_branch}' already exists. Aborting to avoid collision.")
 
     os.makedirs(os.path.dirname(worktree_dir), exist_ok=True)
+    cleanup_warnings = []
 
     try:
-        # 1. Create isolated worktree on a unique temporary branch pointing to HEAD
+        # Create isolated worktree
         print(f"[WORKTREE] Creating isolated worktree at '{worktree_dir}' on ref '{temp_branch}'...")
-        git_cmd(["worktree", "add", "-b", temp_branch, worktree_dir, head_commit])
+        git_cmd(["worktree", "add", "-b", temp_branch, worktree_dir, head_commit], cwd=cwd)
 
-        # 2. Execute publishing mode
         if mode == "history_preserving":
-            # Apply exclusion filters to the worktree branch
             if exclude_patterns:
                 print(f"[FILTER] Applying {len(exclude_patterns)} exclusion filter(s)...")
                 for pat in exclude_patterns:
-                    # Validate exclusion pattern against dangerous inputs
-                    if pat in ("/", "\\", ".", "*") or ".." in pat:
-                        raise ValueError(f"Dangerous exclusion pattern rejected: '{pat}'")
                     git_cmd(["rm", "-r", "--cached", "--ignore-unmatch", pat], cwd=worktree_dir, check=False)
 
-                # Check if there are changes to commit after exclusions
                 status_res = git_cmd(["status", "--porcelain"], cwd=worktree_dir)
                 if status_res.stdout.strip():
                     commit_msg = f"publish: release to {remote_name} (platform filtered)"
@@ -136,54 +221,70 @@ def publish_target(
                     print(f"[INFO] No excluded files found in tree; publishing HEAD commit directly.")
 
         elif mode == "clean_snapshot":
-            # Create a completely orphan branch with 0 historical commits
+            orphan_branch = f"{temp_branch}_orphan"
             print(f"[CLEAN SNAPSHOT] Creating orphan single-commit snapshot...")
-            git_cmd(["checkout", "--orphan", f"{temp_branch}_orphan"], cwd=worktree_dir)
+            git_cmd(["checkout", "--orphan", orphan_branch], cwd=worktree_dir)
             if exclude_patterns:
                 for pat in exclude_patterns:
-                    if pat in ("/", "\\", ".", "*") or ".." in pat:
-                        raise ValueError(f"Dangerous exclusion pattern rejected: '{pat}'")
                     git_cmd(["rm", "-r", "--cached", "--ignore-unmatch", pat], cwd=worktree_dir, check=False)
             git_cmd(["commit", "-m", f"publish: clean snapshot release to {remote_name}"], cwd=worktree_dir)
-            temp_branch = f"{temp_branch}_orphan"
+            temp_branch = orphan_branch
         else:
-            raise ValueError(f"Unknown publishing mode: '{mode}'. Must be 'history_preserving' or 'clean_snapshot'.")
+            raise ValueError(f"Unknown publishing mode: '{mode}'.")
 
-        # 3. Push to remote
+        # Verify exclusion policy against resulting worktree tree
+        verify_tree_exclusions(worktree_dir, exclude_patterns)
+
+        # Push to remote
         push_args = [remote_name, f"{temp_branch}:{target_branch}"]
-        if push_tags:
+        if push_tags and mode != "clean_snapshot":
             push_args.append("--tags")
         if dry_run:
             push_args.append("--dry-run")
 
         print(f"[PUSH] Executing: git push {' '.join(push_args)}")
-        push_res = git_cmd(["push"] + push_args, cwd=worktree_dir)
+        git_cmd(["push"] + push_args, cwd=worktree_dir)
         print(f"[SUCCESS] Published to '{remote_name}/{target_branch}' successfully.")
         return True
 
     finally:
-        # GUARANTEED CLEANUP: executed regardless of errors, interrupts, or exceptions
-        print(f"[CLEANUP] Cleaning up isolated worktree and temporary branch '{temp_branch}'...")
+        # Guaranteed cleanup with explicit error reporting
         if os.path.exists(worktree_dir):
-            git_cmd(["worktree", "remove", "--force", worktree_dir], check=False)
+            res = git_cmd(["worktree", "remove", "--force", worktree_dir], cwd=cwd, check=False)
+            if res.returncode != 0:
+                cleanup_warnings.append(f"worktree remove: {res.stderr.strip()}")
             if os.path.exists(worktree_dir):
                 shutil.rmtree(worktree_dir, ignore_errors=True)
-        git_cmd(["worktree", "prune"], check=False)
-        git_cmd(["branch", "-D", temp_branch], check=False)
-        # Also clean up orphan branch if created
-        git_cmd(["branch", "-D", f"{temp_branch}_orphan"], check=False)
-        print("[CLEANUP] Workspace restored. Original user branch and index untouched.")
+
+        res = git_cmd(["worktree", "prune"], cwd=cwd, check=False)
+        if res.returncode != 0:
+            cleanup_warnings.append(f"worktree prune: {res.stderr.strip()}")
+
+        res = git_cmd(["branch", "-D", temp_branch], cwd=cwd, check=False)
+        if res.returncode != 0:
+            cleanup_warnings.append(f"branch -D {temp_branch}: {res.stderr.strip()}")
+
+        orphan_branch = f"{temp_branch}_orphan"
+        git_cmd(["branch", "-D", orphan_branch], cwd=cwd, check=False)
+
+        if cleanup_warnings:
+            print(f"[CLEANUP WARNING] Cleanup encountered issues: {'; '.join(cleanup_warnings)}", file=sys.stderr)
+        else:
+            print("[CLEANUP] Workspace restored cleanly. Original user branch and index untouched.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Git Publisher with Worktree Isolation")
-    parser.add_argument("--remote", "-r", required=True, help="Git remote name (e.g. origin, gitlab)")
+    # Accept both --remote and --target
+    parser.add_argument("--remote", "-r", "--target", "-t", dest="remote", required=True,
+                        help="Git remote name (e.g. origin, gitlab)")
     parser.add_argument("--branch", "-b", default="main", help="Target remote branch (default: main)")
     parser.add_argument("--mode", "-m", choices=["history_preserving", "clean_snapshot"], default="history_preserving",
                         help="Publishing mode (default: history_preserving)")
     parser.add_argument("--exclude", "-e", action="append", default=[], help="File pattern to exclude (repeatable)")
-    parser.add_argument("--tags", action="store_true", help="Push tags")
+    parser.add_argument("--tags", action="store_true", help="Push tags (forbidden in clean_snapshot mode)")
     parser.add_argument("--dry-run", action="store_true", help="Execute dry-run without network changes")
+    parser.add_argument("--expected-url", default=None, help="Verify that remote URL matches this expected value")
 
     args = parser.parse_args()
 
@@ -195,7 +296,8 @@ def main():
                 mode=args.mode,
                 exclude_patterns=args.exclude,
                 push_tags=args.tags,
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                expected_url=args.expected_url
             )
             return 0 if success else 1
     except Exception as e:

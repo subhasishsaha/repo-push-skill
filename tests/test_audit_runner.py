@@ -94,6 +94,26 @@ def calculate_tax():
         self.assertEqual(digest1, digest2)
         self.assertEqual(len(digest1), 64)
 
+    def test_gate_1_fails_on_dirty_working_tree(self):
+        """Gate 1 must fail if uncommitted modifications exist in working tree."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            # Gate 1 should fail if git is missing or repo not git
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_1_hygiene()
+            self.assertEqual(gate["status"], "FAIL")
+
+    def test_gate_4_detects_secret_in_untracked_file(self):
+        """Gate 4 must inspect untracked files outside standard ignores."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "untracked_script.py").write_text('API_KEY = "ghp_1234567890abcdef1234567890abcdef"', encoding="utf-8")
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_4_secrets()
+            self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

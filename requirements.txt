@@ -1,0 +1,3 @@
+# Core dependencies for repo-push schema validation
+PyYAML>=6.0
+jsonschema>=4.0

@@ -119,9 +119,9 @@ actions:
     description: "Publish a GitHub release with automated release notes when a tag starting with 'v' is pushed"
 ```
 
-- **Zero-Touch Setup:** When you already have a `git remote`, `repo-push` generates `config.yaml` automatically.
+- **Deterministic Remote Setup:** When you already have configured remotes, `repo-push` generates `config.yaml` deterministically from `git remote -v`, resolving active branches and targets for user verification before publishing.
 - **Strict Cross-Validation (`ACT-001`):** Prevents dead code by ensuring every platform referenced in `actions.yaml` is actively defined in `config.yaml`.
-- **Pristine Local Branches:** Exclusion filtering happens via isolated Git worktrees (`git worktree add`)—your local working directory and active branch remain 100% untouched.
+- **Pristine Working Copy:** Exclusion filtering executes inside isolated Git worktrees (`git worktree add`)—your active branch (`main`) and working copy remain untouched. Temporary worktrees and release branches are managed with structured `try ... finally` cleanup.
 
 ---
 
@@ -129,14 +129,14 @@ actions:
 
 To prevent subagents from overstepping their scope—such as a prompt-injected **`remediator` modifying `auditor`'s report** instead of fixing application code—`repo-push` enforces a **3-Layer Defense-in-Depth Model**:
 
-1. **Layer 1 (Prompt Contracts):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter).
-2. **Layer 2 (Physical OS File Locking):** `.audit/reports/` is physically locked with OS read-only attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (Cryptographic SHA-256 Verification & Rollback):** A cryptographic digest of all audit reports is recorded prior to remediation. When `remediator` finishes, the Orchestrator verifies that zero unauthorized alterations occurred. If tampered with, the turn is immediately rejected and rolled back.
+1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
+2. **Layer 2 (OS File-Lock Barrier):** `.audit/reports/` and `.audit/.trusted/` are locked with OS read-only attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
+3. **Layer 3 (HMAC Authentication & Automatic Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 (using an ephemeral session secret key stored outside the repository in the system temp directory) is recorded prior to remediation. If any tampering, signature mismatch, unauthorized file addition, or deletion is detected, the turn fails closed and pristine reports are restored from backup.
 
 - **`explorer`**: Permitted writes: `.audit/reports/explorer_report.md` & `.audit/.scratch/`. Forbidden: `README.md`, application code.
 - **`documenter`**: Permitted writes: `README.md`. Forbidden: `.audit/reports/`, application code.
-- **`auditor`**: Permitted writes: `.audit/.scratch/` & `.audit/reports/auditor_report.md`. Forbidden: ANY application code or `README.md`.
-- **`remediator`**: Permitted writes: Application code & configs. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` (PHYSICALLY OS-LOCKED AND CRYPTOGRAPHICALLY VERIFIED).**
+- **`auditor`**: Permitted writes: `.audit/.scratch/`, `.audit/reports/auditor_report.md`, and `.audit/reports/audit_evidence.json`. Forbidden: ANY application code or `README.md`.
+- **`remediator`**: Permitted writes: Application code & manifests. **CRITICAL RESTRICTION: MUST NEVER TOUCH `.audit/reports/` OR `.audit/.trusted/` (PHYSICALLY OS-LOCKED, HMAC AUTHENTICATED, AND CRYPTOGRAPHICALLY VERIFIED).**
 
 ---
 
