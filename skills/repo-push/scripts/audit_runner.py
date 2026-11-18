@@ -293,8 +293,8 @@ class AuditRunner:
                 text=True
             ).strip()
             
-            untracked = [line[3:].strip() for line in status_out.splitlines() if line.startswith("??")]
-            dirty = [line[3:].strip() for line in status_out.splitlines() if not line.startswith("??") and line.strip()]
+            untracked = [line[2:].strip() for line in status_out.splitlines() if line.startswith("??")]
+            dirty = [line[2:].strip() for line in status_out.splitlines() if not line.startswith("??") and line.strip()]
             
             # Enforce clean working tree: dirty files are blockers
             if dirty:
@@ -426,8 +426,13 @@ class AuditRunner:
                     elif isinstance(node, ast.ImportFrom):
                         if node.module:
                             imported_modules.add(node.module.split(".")[0])
-            except Exception:
-                pass
+            except Exception as e:
+                rel = str(pf.relative_to(self.repo_root)).replace("\\", "/")
+                self._add_finding(
+                    "DEPENDENCIES", "BLOCKER", rel,
+                    f"Failed to parse Python AST syntax: {e}",
+                    "Fix Python syntax error in file so dependencies can be fully analyzed."
+                )
 
         declared = set()
         # 1. Check requirements.txt
@@ -456,8 +461,12 @@ class AuditRunner:
                         m = re.match(r'^\s*([a-zA-Z0-9_\-]+)\s*=', line) or re.match(r'^\s*"([a-zA-Z0-9_\-]+)', line)
                         if m:
                             declared.add(m.group(1).replace("-", "_").lower())
-            except Exception:
-                pass
+            except Exception as e:
+                self._add_finding(
+                    "DEPENDENCIES", "BLOCKER", "pyproject.toml",
+                    f"Failed to parse pyproject.toml: {e}",
+                    "Fix formatting/syntax in pyproject.toml."
+                )
 
         # 3. Check Node package.json if present
         pkg_json_file = self.repo_root / "package.json"
@@ -467,8 +476,12 @@ class AuditRunner:
                 for k in ["dependencies", "devDependencies"]:
                     for dep in pkg_data.get(k, {}):
                         declared.add(dep)
-            except Exception:
-                pass
+            except Exception as e:
+                self._add_finding(
+                    "DEPENDENCIES", "BLOCKER", "package.json",
+                    f"Failed to parse package.json: {e}",
+                    "Fix JSON syntax in package.json."
+                )
 
         internal_packages = {"skills", "tests", "scripts"}
         for f in self.repo_root.iterdir():
@@ -503,7 +516,8 @@ class AuditRunner:
             )
 
         duration = int((time.time() - start) * 1000)
-        status = "PASS" if not undeclared else "FAIL"
+        dep_blockers = [f for f in self.evidence["findings"] if f["category"] == "DEPENDENCIES" and f["severity"] == "BLOCKER"]
+        status = "PASS" if (not undeclared and not dep_blockers) else "FAIL"
 
         gate_res = {
             "name": "GATE_3_DEPENDENCIES",
@@ -537,7 +551,26 @@ class AuditRunner:
                     )
                     break
 
-        DUMMY_ALLOWLIST = ["example", "dummy", "placeholder", "xxx", "fake", "test", "mock", "1234567890abcdef"]
+        EXACT_TEST_FIXTURE_TOKENS = {
+            "ghp_1234567890abcdef1234567890abcdef",
+            "ghp_000000000000000000000000000000000000",
+            "AKIAIOSFODNN7EXAMPLE",
+            "AKIA0000000000000000",
+        }
+
+        def is_test_fixture(token: str, line_text: str = "") -> bool:
+            if token in EXACT_TEST_FIXTURE_TOKENS or any(t in token for t in EXACT_TEST_FIXTURE_TOKENS):
+                return True
+            lower_line = line_text.lower()
+            if "# noqa" in lower_line or "test-fixture" in lower_line or "# test-credential" in lower_line or "test_credential" in lower_line:
+                return True
+            lower_token = token.lower()
+            if "example" in lower_token or "placeholder" in lower_token or "dummy" in lower_token:
+                return True
+            token_body = token.split("_", 1)[-1] if "_" in token else token
+            if len(set(token_body)) <= 2:
+                return True
+            return False
 
         # 2. Check file contents for tokens and developer paths (including tests/)
         for tf in scannable_files:
@@ -554,8 +587,9 @@ class AuditRunner:
                 # Check secret patterns
                 for pat, label in SECRET_PATTERNS:
                     for m in pat.finditer(line):
-                        token_str = m.group(0)
-                        if any(x in token_str.lower() for x in DUMMY_ALLOWLIST):
+                        token_str = m.group(1) if m.groups() else m.group(0)
+                        raw_str = m.group(0)
+                        if is_test_fixture(token_str, line) or is_test_fixture(raw_str, line):
                             continue
                         if "re.compile" in line or "AKIA[0-9A-Z]" in line:
                             continue
@@ -599,19 +633,21 @@ class AuditRunner:
                     errors="replace"
                 )
                 history_scanned = True
-                for pat, label in SECRET_PATTERNS:
-                    for m in pat.finditer(log_out):
-                        token_str = m.group(0)
-                        if any(x in token_str.lower() for x in DUMMY_ALLOWLIST):
-                            continue
-                        if "re.compile" in token_str:
-                            continue
-                        self._add_finding(
-                            "SECRETS_AND_LEAKS", "BLOCKER", "git_history",
-                            f"Historical commit contains potential {label} leak: {mask_token(token_str)}",
-                            "Scrub git history using git-filter-repo or BFG Repo-Cleaner before public push."
-                        )
-                        break
+                for line in log_out.splitlines():
+                    for pat, label in SECRET_PATTERNS:
+                        for m in pat.finditer(line):
+                            token_str = m.group(1) if m.groups() else m.group(0)
+                            raw_str = m.group(0)
+                            if is_test_fixture(token_str, line) or is_test_fixture(raw_str, line):
+                                continue
+                            if "re.compile" in line or "AKIA[0-9A-Z]" in line:
+                                continue
+                            self._add_finding(
+                                "SECRETS_AND_LEAKS", "BLOCKER", "git_history",
+                                f"Historical commit contains potential {label} leak: {mask_token(token_str)}",
+                                "Scrub git history using git-filter-repo or BFG Repo-Cleaner before public push."
+                            )
+                            break
             except Exception as e:
                 scan_errors.append(f"Git history scan failed: {e}")
 

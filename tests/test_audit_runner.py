@@ -116,5 +116,30 @@ def calculate_tax():
             self.assertGreaterEqual(len(blockers), 1)
 
 
+    def test_gate_3_fails_on_python_syntax_error(self):
+        """Gate 3 must fail if Python source files have syntax/AST parsing errors."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "bad_syntax.py").write_text("def unclosed_function(: pass", encoding="utf-8")
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_3_deps()
+            self.assertEqual(gate["status"], "FAIL")
+            blockers = [f for f in runner.evidence["findings"] if f["category"] == "DEPENDENCIES" and f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 1)
+
+    def test_gate_4_does_not_exempt_coincidental_substrings(self):
+        """Gate 4 must NOT exempt a credential merely because it contains 'test' or 'fake' as a substring."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            # A 36-char token containing the word 'test'
+            token_with_test = "ghp_98765test43210fedcbamock9876543210fe"  # test-fixture
+            (repo / "service.py").write_text(f'AUTH_SECRET = "{token_with_test}"', encoding="utf-8")
+            runner = AuditRunner(repo)
+            gate = runner.run_gate_4_secrets()
+            self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
+            blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
+            self.assertGreaterEqual(len(blockers), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

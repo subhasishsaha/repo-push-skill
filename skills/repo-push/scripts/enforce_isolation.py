@@ -32,12 +32,16 @@ DEFAULT_TRUSTED_DIR = os.path.abspath(os.path.join(".audit", ".trusted"))
 
 def get_session_hmac_key(repo_root=None):
     """
-    Retrieves or generates an ephemeral HMAC secret key stored outside the repository
+    Retrieves or atomically creates an ephemeral HMAC secret key stored outside the repository
     in the system temporary directory. Used for cryptographic tamper-detection of reports.
+    Fails closed if persistent key storage is unavailable or corrupt.
     """
     env_key = os.environ.get("REPO_PUSH_HMAC_KEY")
     if env_key:
-        return env_key.encode("utf-8")
+        key_bytes = env_key.encode("utf-8")
+        if len(key_bytes) < 32:
+            raise ValueError(f"Environment variable REPO_PUSH_HMAC_KEY must be at least 32 bytes (got {len(key_bytes)} bytes).")
+        return key_bytes[:32]
 
     root = os.path.abspath(repo_root or ".")
     root_hash = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
@@ -48,18 +52,35 @@ def get_session_hmac_key(repo_root=None):
             raw_key = key_file.read_bytes()
             if len(raw_key) >= 32:
                 return raw_key[:32]
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(f"Failed to read existing HMAC session key at '{key_file}': {e}")
 
-    # Generate a fresh 256-bit cryptographically secure key
+    # Atomic creation of fresh 256-bit key
     new_key = os.urandom(32)
     try:
-        key_file.write_bytes(new_key)
-        # Protect key file permissions on POSIX
-        if os.name != "nt":
-            os.chmod(key_file, 0o600)
-    except Exception:
-        pass
+        # Use O_CREAT | O_EXCL to prevent race conditions during concurrent initialization
+        fd = os.open(str(key_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, new_key)
+        finally:
+            os.close(fd)
+    except FileExistsError:
+        # Another process initialized the key concurrently; read and return it
+        try:
+            return key_file.read_bytes()[:32]
+        except Exception as e:
+            raise RuntimeError(f"Concurrent key initialization conflict reading '{key_file}': {e}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to persist HMAC session key to '{key_file}': {e}")
+
+    # Verify that the persisted key can be read back reliably
+    try:
+        persisted = key_file.read_bytes()
+        if len(persisted) < 32 or persisted[:32] != new_key:
+            raise RuntimeError(f"Key verification failed: read-back key mismatch on '{key_file}'.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to verify persisted HMAC key on '{key_file}': {e}")
+
     return new_key
 
 

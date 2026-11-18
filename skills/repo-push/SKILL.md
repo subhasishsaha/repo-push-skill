@@ -21,27 +21,27 @@ The primary coordinator acts as the **Orchestrator**. It does not perform audits
 To prevent subagents from overstepping their scope—such as a prompt-injected **`remediator` editing `auditor`'s report** instead of fixing the application code—the system does **not** rely solely on system prompt instructions. It implements a **3-Layer Defense-in-Depth Model**:
 
 ```text
-┌────────────────────────────────────────────────────────┐
-│ Layer 1: Prompt Contract (In-Memory System Prompt)     │ ◄── Behavioral boundary
-├────────────────────────────────────────────────────────┤
-│ Layer 2: OS File-Lock Barrier (Read-Only OS Attribute) │ ◄── Physical filesystem block
-├────────────────────────────────────────────────────────┤
-│ Layer 3: Cryptographic Diff Verification & Rollback    │ ◄── Automated rollback on breach
-└────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ Layer 1: Prompt Contract (In-Memory System Prompt)               │ ◄── Behavioral boundary
+├──────────────────────────────────────────────────────────────────┤
+│ Layer 2: OS Read-Only Permission Barrier (Filesystem Attributes) │ ◄── Filesystem permission attributes
+├──────────────────────────────────────────────────────────────────┤
+│ Layer 3: HMAC Tamper Detection & Verified Rollback               │ ◄── Automated rollback on breach
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 1. **Layer 1: In-Memory Prompt Contracts:**  
    The Orchestrator defines explicit role boundaries and forbidden scopes in each subagent's system prompt (with zero `.audit/.agents/` disk clutter). Subagents are instructed to treat all repository files as untrusted input to defend against prompt injection.
-2. **Layer 2: Physical OS File Locking:**  
-   Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting OS read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) across both `.audit/reports/` and `.audit/.trusted/`.
-3. **Layer 3: HMAC-Authenticated Manifest & Fail-Closed Rollback:**  
-   A cryptographic snapshot authenticated via HMAC-SHA256 (using an ephemeral session secret key stored in the system temporary directory outside the repository) and physical backup of `.audit/reports/` is stored in `.audit/.trusted/`. When `remediator` completes, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py verify-and-restore`. If any unauthorized file creation, modification, deletion, size change, symlink tampering, or HMAC signature mismatch is detected:
+2. **Layer 2: OS Read-Only Permission Barrier:**  
+   Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting filesystem read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) across both `.audit/reports/` and `.audit/.trusted/`.
+3. **Layer 3: HMAC Tamper Detection & Verified Rollback:**  
+   A cryptographic snapshot authenticated via HMAC-SHA256 (using an ephemeral session secret key stored in the system temporary directory outside the repository) and a local backup of `.audit/reports/` is stored in `.audit/.trusted/`. When `remediator` completes, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py verify-and-restore`. If any unauthorized file creation, modification, deletion, size change, symlink tampering, or HMAC signature mismatch is detected:
    - The subagent turn is **immediately rejected (fail-closed)**.
-   - Pristine reports are automatically restored from the trusted backup.
+   - Reports are independently verified against the HMAC manifest before rollback from the trusted backup.
    - A security violation is recorded in the audit log.
    Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
 
-> **Honesty & Boundary Notice**: Filesystem permission attributes (`attrib` / `chmod`) provide defense-in-depth against accidental modifications and model drift. Tamper detection is enforced by HMAC-SHA256 manifest authentication with independent backup verification before rollback. Genuine adversarial isolation against same-user malicious code execution requires OS-level containerization.
+> **Honesty & Boundary Notice**: Filesystem permission attributes (`attrib` / `chmod`) and HMAC signatures provide defense-in-depth against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account. Genuine adversarial isolation requires OS-level containerization.
 
 ---
 
@@ -295,16 +295,16 @@ actions:
    - Execution pauses until user confirms.
 
 5. **Deterministic Isolated Git Worktree Publishing:**
-   To guarantee that the developer's working directory, active branch (`main`), index, and uncommitted edits remain 100% untouched and protected against race conditions:
+   Publishing does not switch the user's active branch or modify application source files. Temporary worktree files and Git worktree metadata are managed separately under `.audit/.scratch/worktrees/`:
    ```bash
    python <skill>/scripts/git_publisher.py --remote origin --mode history_preserving
    ```
    *(Note: Accepts `--remote` or `--target` interchangeably).*
    **Execution Guarantee & Concurrency Protection:**
-   1. **Concurrency Lock:** Acquires `.audit/.trusted/publishing.lock` preventing overlapping push attempts.
-   2. **Isolated Ephemeral Worktree:** Creates an isolated worktree outside the working directory using `git worktree add -b __publish/<target> <worktree_path> <HEAD>`.
-   3. **Platform Tree Filtering:** Exclusions are cleanly removed inside the isolated worktree without touching the developer's local files.
+   1. **Kernel-Level OS File Lock:** Acquires non-blocking OS lock (`msvcrt.locking` on Windows, `fcntl.flock` on Unix) on `.audit/.trusted/publishing.lock` preventing concurrent push attempts and eliminating stale-lock races.
+   2. **Isolated Ephemeral Worktree:** Creates an isolated worktree under `.audit/.scratch/worktrees/wt_<id>` using `git worktree add -b __repo_push_pub_<id> <worktree_path> <HEAD>`.
+   3. **Platform Tree Filtering:** Exclusions are cleanly removed inside the isolated worktree without touching the developer's working copy.
    4. **Two Publishing Modes:**
-      - `history_preserving` (default): Applies an exclusion release commit on top of HEAD.
-      - `clean_snapshot`: Creates an orphan commit with clean history for public mirrors.
-   5. **Guaranteed Try/Finally Cleanup:** A structured cleanup block guarantees that worktrees are removed (`git worktree remove --force`), pruned, and temporary branches deleted even if network drops or errors occur. Local files never flicker or disappear from disk.
+      - `history_preserving` (default): Applies an exclusion release commit on top of HEAD, preserving prior commit history.
+      - `clean_snapshot`: Creates an orphan commit with clean single-commit history (forbids `--tags` to prevent leaking excluded history).
+   5. **Guaranteed Try/Finally Cleanup:** A structured cleanup block guarantees that worktrees are removed (`git worktree remove --force`), pruned, and temporary branches deleted even if network drops or errors occur. Visible warnings and structured exit codes (`2` on cleanup failure, `0` on clean success) are returned if manual cleanup is needed.

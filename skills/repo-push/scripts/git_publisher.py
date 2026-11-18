@@ -16,6 +16,7 @@ Implements an isolated, worktree-based publishing pipeline that:
 import argparse
 import fnmatch
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -126,18 +127,51 @@ def get_current_commit(cwd=None):
     return res.stdout.strip()
 
 
+def resolve_expected_url_from_config(remote_name, cwd=None):
+    """Attempts to find the target's configured URL from .repo-push/config.yaml."""
+    root = Path(cwd or ".").resolve()
+    cfg_path = root / ".repo-push" / "config.yaml"
+    if cfg_path.exists():
+        try:
+            import yaml
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "targets" in data:
+                for t in data.get("targets", []):
+                    if t.get("name") == remote_name:
+                        return t.get("url")
+        except Exception:
+            pass
+    return None
+
+
 def validate_remote(remote_name, expected_url=None, cwd=None):
-    """Verifies that the remote exists and optionally checks push URL match."""
+    """
+    Verifies that the remote exists and checks that configured remote push URLs
+    match the expected target URL declared in config or CLI.
+    """
     res = git_cmd(["remote"], cwd=cwd, check=False)
     remotes = [r.strip() for r in res.stdout.splitlines() if r.strip()]
     if remote_name not in remotes:
         raise ValueError(f"Remote '{remote_name}' does not exist. Configured remotes: {remotes}")
 
+    if not expected_url:
+        expected_url = resolve_expected_url_from_config(remote_name, cwd=cwd)
+
     if expected_url:
-        url_res = git_cmd(["remote", "get-url", "--push", remote_name], cwd=cwd, check=False)
-        actual_url = url_res.stdout.strip()
-        if actual_url and actual_url != expected_url:
-            raise ValueError(f"Remote push URL mismatch for '{remote_name}': expected '{expected_url}', but git remote is configured with '{actual_url}'.")
+        # Check all push URLs configured for this remote
+        url_res = git_cmd(["remote", "get-url", "--push", "--all", remote_name], cwd=cwd, check=False)
+        actual_urls = [u.strip() for u in url_res.stdout.splitlines() if u.strip()]
+        if not actual_urls:
+            # Fallback to standard get-url
+            u_fallback = git_cmd(["remote", "get-url", remote_name], cwd=cwd, check=False)
+            actual_urls = [u.strip() for u in u_fallback.stdout.splitlines() if u.strip()]
+
+        for actual_url in actual_urls:
+            if actual_url != expected_url:
+                raise ValueError(
+                    f"Remote push URL mismatch for '{remote_name}': expected target URL '{expected_url}', "
+                    f"but git remote is configured with '{actual_url}'."
+                )
     return True
 
 
@@ -267,7 +301,7 @@ def publish_target(
         print(f"[PUSH] Executing: git push {' '.join(push_args)}")
         git_cmd(["push"] + push_args, cwd=worktree_dir)
         print(f"[SUCCESS] Published to '{remote_name}/{target_branch}' successfully.")
-        return True
+        return True, cleanup_warnings
 
     finally:
         # Guaranteed cleanup with explicit error reporting
@@ -276,7 +310,10 @@ def publish_target(
             if res.returncode != 0:
                 cleanup_warnings.append(f"worktree remove: {res.stderr.strip()}")
             if os.path.exists(worktree_dir):
-                shutil.rmtree(worktree_dir, ignore_errors=True)
+                try:
+                    shutil.rmtree(worktree_dir)
+                except Exception as e:
+                    cleanup_warnings.append(f"rmtree {worktree_dir}: {e}")
 
         res = git_cmd(["worktree", "prune"], cwd=cwd, check=False)
         if res.returncode != 0:
@@ -312,7 +349,7 @@ def main():
 
     try:
         with PublishingLock():
-            success = publish_target(
+            success, cleanup_warnings = publish_target(
                 remote_name=args.remote,
                 target_branch=args.branch,
                 mode=args.mode,
@@ -321,7 +358,13 @@ def main():
                 dry_run=args.dry_run,
                 expected_url=args.expected_url
             )
-            return 0 if success else 1
+            if not success:
+                return 1
+            if cleanup_warnings:
+                print(f"[STATUS: PUBLISHED_WITH_CLEANUP_FAILURE] Push succeeded to '{args.remote}/{args.branch}', but cleanup warning(s) occurred: {'; '.join(cleanup_warnings)}", file=sys.stderr)
+                return 2
+            print(f"[STATUS: PUBLISHED] Published to '{args.remote}/{args.branch}' cleanly with zero warnings.")
+            return 0
     except Exception as e:
         print(f"[PUBLISHER ERROR] {e}", file=sys.stderr)
         return 1

@@ -40,6 +40,27 @@ class TestGitPublishingIntegration(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("does not exist", res.stderr)
 
+    def test_remote_url_mismatch_rejected(self):
+        """Push URL mismatch with declared target must be rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            run_cmd(["git", "init", "-b", "main"], cwd=repo)
+            run_cmd(["git", "config", "user.name", "TestUser"], cwd=repo)
+            run_cmd(["git", "config", "user.email", "test@example.com"], cwd=repo)
+            (repo / "file.txt").write_text("content", encoding="utf-8")
+            run_cmd(["git", "add", "."], cwd=repo)
+            run_cmd(["git", "commit", "-m", "init"], cwd=repo)
+            run_cmd(["git", "remote", "add", "origin", "https://github.com/actual/repo.git"], cwd=repo)
+
+            # Attempt publish with different expected-url
+            res = run_cmd(
+                [sys.executable, str(SCRIPT), "--remote", "origin", "--expected-url", "https://github.com/expected/repo.git"],
+                cwd=repo,
+                check=False
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Remote push URL mismatch", res.stderr)
+
     def test_path_traversal_exclusion_rejected(self):
         """Exclusions with path traversal ('..') must be rejected upfront."""
         res = run_cmd([sys.executable, str(SCRIPT), "--remote", "origin", "--exclude", "../secret.txt"], check=False)
