@@ -166,14 +166,16 @@ flowchart TD
 
 ---
 
-## 🛠️ Dynamic Scripting in `.audit/.scratch/`
+## 🛠️ Dynamic Scripting & Verification Gates in `.audit/.scratch/`
 
-Instead of relying on rigid, pre-packaged scripts, subagents generate on-demand, targeted audit scripts in `.audit/.scratch/`:
-1. **Eagerness Bias & Stubbing:** AST inspection for empty function bodies (`pass`, `...`), `raise NotImplementedError`, `// TODO` comments, and silent error swallowers (`except Exception: pass`).
-2. **Dependency Manifest Mismatches:** Compares all source code imports against manifest files (`requirements.txt`, `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`).
-3. **Local Environment & Path Leaks:** Flags hardcoded developer paths (`C:\Users\...`, `/home/...`) and internal private IPs.
-4. **Documentation-to-Code Drift:** Verifies that internal Markdown links and CLI entrypoints claimed in `README.md` actually exist on disk.
-5. **Secrets & Zero-Leak Gate:** Pattern detection for API keys, tokens, and tracked `.env` files.
+Instead of relying on rigid, pre-packaged scripts, subagents generate on-demand, targeted inspection scripts in `.audit/.scratch/`. All code analysis uses **static AST parsing (`ast.parse()`) exclusively**—untrusted application code is never executed:
+
+1. **Gate 1: Repository Hygiene:** Validates `README.md` truth, LICENSE presence, `.gitignore` completeness, and clean Git staging.
+2. **Gate 2: AST Code Integrity:** AST inspection for empty function bodies (`pass`, `...`), `raise NotImplementedError`, `// TODO` comments, and silent error swallowers.
+3. **Gate 3: Dependency Parity:** Compares all source code imports against manifest files (`requirements.txt`, `pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`).
+4. **Gate 4: Secrets & Commit History:** Scans both active files and reachable commit history (`git log -p`) for API keys, tokens, and tracked credentials.
+5. **Gate 5: Configuration Validation:** Mathematically validates `.repo-push/config.yaml` using JSON Schema.
+6. **Gate 6: Actions Cross-Validation:** Enforces that every platform referenced in `actions.yaml` is actively defined in `config.yaml` (`ACT-001`).
 
 The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts never pollute the repository.
 
@@ -188,16 +190,34 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 ├── .gitignore                                 # Clean gitignore configuration
 ├── .editorconfig                              # Standardized editor config
 ├── .github/
-│   ├── workflows/ci.yml                       # CI test & audit pipeline
+│   ├── workflows/ci.yml                       # Multi-version CI test & audit pipeline
 │   └── dependabot.yml                         # Automated dependency alerts
+│
+├── .repo-push/                                # Active repository publishing config
+│   ├── config.yaml                            # Remote targets, platform exclusions, pre-push gates
+│   └── actions.yaml                           # (Optional) Declarative workflow & action intents
+│
+├── schemas/                                   # Public JSON Schemas for IDE autocomplete
+│   ├── repo-push.schema.json                  # Schema for config.yaml
+│   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
 ├── skills/
 │   └── repo-push/
 │       ├── SKILL.md                           # Master multi-agent orchestrator runbook
 │       │
+│       ├── scripts/                           # Deterministic zero-dependency tooling
+│       │   ├── generate_config.py             # Deterministic remote & platform discovery
+│       │   ├── validate_config.py             # Zero-dependency YAML validator & cross-referencer
+│       │   └── enforce_isolation.py           # OS file locking & SHA-256 tamper verification
+│       │
+│       ├── schemas/                           # Bundled JSON schemas
+│       │   ├── repo-push.schema.json
+│       │   └── repo-push-actions.schema.json
+│       │
 │       ├── templates/                         # Production-grade templates
-│       │   ├── agents/                        # Behavioral contracts (explorer.md, documenter.md, auditor.md, remediator.md)
-│       │   ├── audit/                         # auditor_report & final_report templates
+│       │   ├── repo-push/                     # Starter config.yaml & actions.yaml
+│       │   ├── agents/                        # Subagent boundary specifications
+│       │   ├── audit/                         # auditor_report & final_report gate templates
 │       │   ├── gitignore/                     # Node, Python, Go, Rust, Universal
 │       │   ├── docs/                          # README, CONTRIBUTING, SECURITY, EditorConfig
 │       │   ├── github/                        # Workflows, Issue & PR templates, Dependabot
