@@ -11,19 +11,27 @@ The primary coordinator acts as the **Orchestrator**, actively spawning and mana
 
 ## 📦 Installation & Setup
 
-Installing `repo-push` into your AI agent is simple:
+`repo-push` can be installed either as an **agent skill** or as an **Antigravity plugin**:
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/subhasishsaha/repo-push-skill.git
-   ```
+### Option 1: Global Skill Installation (Universal)
+Clone the repository and ask your AI agent to install it into your global skills directory:
+```bash
+git clone https://github.com/subhasishsaha/repo-push-skill.git
+```
+Then prompt your agent:
+> *"Install this skill in my global skills directory."*
 
-2. **Open the repository in your AI agent** (Antigravity, Claude Code, Cursor, Windsurf, etc.).
+Your agent will automatically copy `skills/repo-push/` to your environment's global skills path:
+- **Antigravity / Gemini CLI:** `~/.gemini/config/skills/repo-push/`
+- **Claude Code:** `~/.claude/skills/repo-push/`
+- **Cursor / Windsurf / Copilot:** `.cursor/skills/repo-push/` or reference `skills/repo-push/SKILL.md` in `.cursorrules` / `.windsurfrules`
 
-3. **Ask your agent to install it globally:**
-   > *"Install this skill in my global skills directory."*
-
-Your agent will automatically detect your environment, copy `skills/repo-push` to your global configuration (e.g. `~/.gemini/config/skills/repo-push/` or `~/.claude/skills/repo-push/`), and make it available across all your projects.
+### Option 2: Antigravity Plugin Installation
+`repo-push` includes a canonical `plugin.json` manifest. You can install it as an integrated plugin:
+```bash
+antigravity plugin install https://github.com/subhasishsaha/repo-push-skill.git
+```
+Or open the cloned folder in Antigravity IDE—it automatically detects `plugin.json` and loads all associated skills, schemas, and configurations.
 
 ---
 
@@ -122,9 +130,11 @@ actions:
 - **Deterministic Remote Setup:** When you already have configured remotes, `repo-push` generates `config.yaml` deterministically from `git remote -v`, resolving active branches and targets for user verification before publishing.
 - **Strict Cross-Validation (`ACT-001`):** Prevents dead code by ensuring every platform referenced in `actions.yaml` is actively defined in `config.yaml`.
 - **Isolated Worktree Publishing:** Publishing does not switch the user's active branch or modify application source files. Temporary worktree files and Git worktree metadata are managed separately under `.audit/.scratch/worktrees/` with structured `try ... finally` cleanup (with visible warnings if manual cleanup is needed after unexpected process aborts).
+- **Persistent Kernel-Level OS File Locking:** Uses `msvcrt.locking` on Windows and `fcntl.flock` on Unix on `.audit/.trusted/publishing.lock`. The lock file is permanently retained on disk (never deleted on normal release), completely eliminating check-then-delete and recreation races between concurrent publishing processes.
+- **Fail-Closed Remote URL Verification:** Publishing resolves the target remote's expected URL from `.repo-push/config.yaml` (or explicit `--expected-url`) and verifies that all configured push URLs match. Fails closed if configuration is missing, malformed, or missing the target/URL. Transparently normalizes Git URLs (with or without `.git` or trailing slashes).
 - **Two Distinct Publishing Modes:**
   - `history_preserving` (default): Publishes a new release commit with exclusions applied, while retaining full prior commit ancestry.
-  - `clean_snapshot`: Publishes a single orphan commit with zero prior ancestry. Forbids `--tags` to prevent leaking excluded files or history through existing Git tags.
+  - `clean_snapshot`: Publishes a single orphan commit with zero prior ancestry. Forbids `--tags` upfront to prevent leaking excluded files or history through existing Git tags.
 
 ---
 
@@ -134,7 +144,7 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 
 1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
 2. **Layer 2 (OS Read-Only Permission Barrier):** `.audit/reports/` and `.audit/.trusted/` are marked read-only using filesystem attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 (using an ephemeral session secret key stored in the system temp directory) is recorded prior to remediation. If tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup contents are independently verified against the authenticated manifest.
+3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 is recorded prior to remediation. The ephemeral 256-bit session secret key is stored outside the repository in a private per-user directory (`0700` permissions) and protected by `lstat` checks (rejecting symlinks, non-regular files, unowned files, and permissive modes) with atomic non-overwriting publication. If tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup directory is independently verified against the authenticated manifest.
 
 > [!NOTE]
 > **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, filesystem permission attributes and HMAC signatures provide tamper-detection and guardrails against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account.
@@ -176,10 +186,10 @@ flowchart TD
 
 Verification is executed via the canonical engine (`skills/repo-push/scripts/audit_runner.py`), augmented by on-demand targeted inspection scripts created by the `auditor` in `.audit/.scratch/`. All code analysis uses **static AST parsing (`ast.parse()`) exclusively**—untrusted application code is never executed:
 
-1. **Gate 1: Repository Hygiene:** Enforces clean Git working tree (fails on uncommitted or unexpected untracked modifications), validates `README.md` presence, LICENSE presence, and `.gitignore` completeness.
+1. **Gate 1: Repository Hygiene:** Enforces clean Git working tree (fails closed on uncommitted or unexpected untracked modifications), validates `README.md` presence, LICENSE presence, and `.gitignore` completeness.
 2. **Gate 2: AST Code Integrity:** AST inspection distinguishing abstract interfaces (`@abstractmethod`, `abc.ABC`, `typing.Protocol`) from incomplete concrete stubs (`pass`, `...`, `raise NotImplementedError`, and `// TODO` markers).
-3. **Gate 3: Static Dependency Consistency Analysis:** Verifies static source code imports against declared manifests for Python (`requirements.txt`, `pyproject.toml`) and Node.js (`package.json`) with canonical alias resolution (`KNOWN_MODULE_MAP`). Dynamic imports, optional dependencies, and platform-specific groups are outside static scope.
-4. **Gate 4: Secrets & Commit History:** Scans tracked files, untracked files outside standard ignores, and locally available reachable Git history (`git log --all -p`) for API keys and credentials, with token masking (`ghp_****`) in reports and fail-safe `NOT_VERIFIED` status reporting.
+3. **Gate 3: Static Dependency Consistency Analysis:** Verifies static source code imports against declared manifests for Python (`requirements.txt`, `pyproject.toml`) and Node.js (`package.json`) with canonical alias resolution (`KNOWN_MODULE_MAP`). Fails closed on syntax and AST parsing errors.
+4. **Gate 4: Secrets & Commit History:** Scans tracked files, untracked files outside standard ignores, and locally available reachable Git history (`git log --all -p`) for API keys and credentials. Restricts fixture exemptions strictly to `EXACT_TEST_FIXTURE_TOKENS` with zero substring-based (`dummy`, `example`, `placeholder`), low-entropy, comment-based (`# test-fixture`, `# noqa`), or line-skipping bypasses. Masks tokens (`ghp_****`) in reports and provides fail-safe `NOT_VERIFIED` status reporting.
 5. **Gate 5: Configuration Validation:** Validates `.repo-push/config.yaml` against its JSON Schema with target name uniqueness, Git URL regexes, and path traversal rejection. Fails closed if dependencies or schema files are missing.
 6. **Gate 6: Actions Cross-Validation:** Enforces that every platform referenced in `actions.yaml` is actively defined in `config.yaml` (`ACT-001`).
 
