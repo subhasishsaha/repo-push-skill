@@ -144,7 +144,12 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 
 1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
 2. **Layer 2 (OS Read-Only Permission Barrier):** `.audit/reports/` and `.audit/.trusted/` are marked read-only using filesystem attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 is recorded prior to remediation. The ephemeral 256-bit session secret key is stored outside the repository in verified private per-user directories (`0700` permissions on POSIX, verified via `lstat` to reject symlinks, unowned files, and permissive modes). Session keys are managed across deterministic candidate paths (primary path and stable `.fallback_keys/` directory) with atomic non-overwriting publication and `os.O_BINARY` creation. If tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup directory is independently verified against the authenticated manifest.
+3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 is recorded prior to remediation. The ephemeral 256-bit session secret key is stored outside the repository in verified private per-user directories:
+   - **POSIX:** Strict `0700` directory permissions, ownership validation (`st_uid == os.getuid()`), and `0600` file modes verified via `lstat` to reject symlinks, unowned files, and permissive modes.
+   - **Windows:** Strict DACL enforcement and verification via `icacls`. Disables inheritance (`/inheritance:r`), strips broad group grants (`/remove:g Everyone Users "Authenticated Users" Guests`), and restricts access strictly to the current user (`%USERNAME%`), Local System (`*S-1-5-18`), and Administrators (`*S-1-5-32-544`). Rejects any candidate directory or key file with unverified or broad access.
+   - **Deterministic Persistence & Atomic Publication:** Keys are managed across deterministic candidate paths (primary path and stable `.fallback_keys/` directory) with atomic non-overwriting publication (`O_CREAT | O_EXCL`) and binary file mode (`os.O_BINARY`) to prevent line-ending corruption.
+   - **Fail-Closed Corrupted Key Handling:** Any regular user-owned key file whose size is not exactly 32 bytes—including empty 0-byte files—is treated as corrupted and raises `RuntimeError` immediately rather than silently falling back to inconsistent keys.
+   - **Tamper Detection & Verified Rollback:** If report tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup directory is independently verified against the authenticated manifest.
 
 > [!NOTE]
 > **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, filesystem permission attributes and HMAC signatures provide tamper-detection and guardrails against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account.
@@ -218,7 +223,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
 ├── tests/                                     # Automated test suite (46 unit & integration tests across 6 modules)
-│   ├── test_isolation.py                      # Fail-closed behavioral isolation & HMAC tests
+│   ├── test_isolation.py                      # Fail-closed behavioral isolation, Windows DACL, & HMAC tests
 │   ├── test_config_validator.py               # Schema, duplicate target, and path traversal tests
 │   ├── test_config_generator.py               # Deterministic config generator tests
 │   ├── test_schema_validation.py              # JSON Schema syntax tests
@@ -232,7 +237,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │       ├── scripts/                           # Production-grade verification & publishing tooling
 │       │   ├── generate_config.py             # Deterministic remote & platform discovery
 │       │   ├── validate_config.py             # PyYAML & JSON Schema validator & cross-referencer
-│       │   ├── enforce_isolation.py           # Fail-closed OS file locking, persistent HMAC authentication & rollback
+│       │   ├── enforce_isolation.py           # Fail-closed OS locking, Windows DACL enforcement, HMAC authentication & rollback
 │       │   ├── git_publisher.py               # Isolated Git worktree publisher with persistent kernel-level OS file locking
 │       │   └── audit_runner.py                # 6-Gate canonical evidence-based verification engine
 │       │
