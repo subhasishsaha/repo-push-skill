@@ -33,7 +33,6 @@ jobs:
 
       - name: Verify skill structure and templates
         run: |
-          python -c "import json, pathlib; json.loads(pathlib.Path('plugin.json').read_text())"
           python -c "import json, pathlib; json.loads(pathlib.Path('schemas/repo-push.schema.json').read_text())"
           python -c "import json, pathlib; json.loads(pathlib.Path('schemas/repo-push-actions.schema.json').read_text())"
           test -f skills/repo-push/SKILL.md || exit 1
@@ -85,7 +84,6 @@ jobs:
 
       - name: Verify skill structure and templates
         run: |
-          python -c "import json, pathlib; json.loads(pathlib.Path('plugin.json').read_text())"
           python -c "import json, pathlib; json.loads(pathlib.Path('schemas/repo-push.schema.json').read_text())"
           python -c "import json, pathlib; json.loads(pathlib.Path('schemas/repo-push-actions.schema.json').read_text())"
           python -c "import pathlib; assert pathlib.Path('skills/repo-push/SKILL.md').is_file()"
