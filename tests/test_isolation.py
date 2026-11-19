@@ -163,6 +163,11 @@ class TestIsolation(unittest.TestCase):
             key_file = key_dir / f".repo_push_key_{root_hash}.secret"
             # Write corrupted 16-byte key
             key_file.write_bytes(b"0123456789abcdef")
+            if os.name != "nt":
+                try:
+                    os.chmod(str(key_file), 0o600)
+                except Exception:
+                    pass
             try:
                 with self.assertRaises(RuntimeError) as ctx:
                     iso_mod.get_session_hmac_key(repo_root=td)

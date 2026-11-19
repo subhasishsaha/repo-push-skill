@@ -185,23 +185,34 @@ def get_session_hmac_key(repo_root=None):
         if not stat.S_ISREG(st.st_mode):
             return None
 
-        # On POSIX: verify ownership and restrictive permissions (0600)
-        if os.name != "nt":
-            if hasattr(os, "getuid") and st.st_uid != os.getuid():
-                return None
-            if (st.st_mode & 0o077) != 0:
-                return None
+        # On POSIX: verify ownership
+        if os.name != "nt" and hasattr(os, "getuid") and st.st_uid != os.getuid():
+            return None
 
         try:
             data = path.read_bytes()
         except Exception as e:
             raise RuntimeError(f"Failed to read HMAC session key at '{path}': {e}")
 
-        if len(data) == 32:
-            return data
-        elif len(data) > 0 and len(data) != 32:
+        # Regular file owned by user with corrupted length must fail closed
+        if len(data) > 0 and len(data) != 32:
             raise RuntimeError(f"Corrupted HMAC session key at '{path}': expected exactly 32 bytes, found {len(data)} bytes.")
-        return None
+
+        if len(data) != 32:
+            return None
+
+        # On POSIX: enforce restrictive permissions (0600)
+        if os.name != "nt":
+            if (st.st_mode & 0o077) != 0:
+                try:
+                    os.chmod(str(path), 0o600)
+                    st = os.lstat(str(path))
+                except OSError:
+                    pass
+            if (st.st_mode & 0o077) != 0:
+                return None
+
+        return data
 
     # Phase 1: Search for an EXISTING valid key in candidate files (in deterministic order)
     for kf in candidate_files:
