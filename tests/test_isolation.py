@@ -16,14 +16,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "skills" / "repo-push" / "scripts" / "enforce_isolation.py"
 
 
-def run_isolation(cmd, reports_dir, trusted_dir):
+def run_isolation(cmd, reports_dir, trusted_dir, cwd=None):
     return subprocess.run(
         [
             sys.executable, str(SCRIPT), cmd,
             "--reports-dir", str(reports_dir),
             "--trusted-dir", str(trusted_dir)
         ],
-        cwd=str(REPO_ROOT),
+        cwd=str(cwd) if cwd else str(REPO_ROOT),
         capture_output=True,
         text=True
     )
@@ -203,7 +203,7 @@ class TestIsolation(unittest.TestCase):
                         pass
 
     def test_refuse_to_adopt_symlink_key(self):
-        """Pre-created symlink at key_file path must be rejected and must fallback to a secure temp key."""
+        """Pre-created symlink at key_file path must be rejected, and fallback key must persist across calls and processes."""
         import importlib.util
         import hashlib
         spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
@@ -211,27 +211,46 @@ class TestIsolation(unittest.TestCase):
         spec.loader.exec_module(iso_mod)
 
         with tempfile.TemporaryDirectory() as td:
+            repo_path = Path(td)
             root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
             key_dir = iso_mod.get_key_dir()
-            key_file = key_dir / f".repo_push_key_{root_hash}.secret"
+            primary_key_file = key_dir / f".repo_push_key_{root_hash}.secret"
             target_decoy = key_dir / f".decoy_target_{root_hash}.txt"
             target_decoy.write_bytes(b"A" * 32)
+
+            reports_dir = repo_path / "reports"
+            trusted_dir = repo_path / ".trusted"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            trusted_dir.mkdir(parents=True, exist_ok=True)
+            (reports_dir / "audit_report.md").write_text("# Report", encoding="utf-8")
 
             try:
                 # Try to create symlink (may require admin on Windows; if os.symlink fails, skip symlink test)
                 try:
-                    os.symlink(str(target_decoy), str(key_file))
+                    os.symlink(str(target_decoy), str(primary_key_file))
                 except OSError:
                     self.skipTest("Symlink creation not permitted in this environment")
 
-                # get_session_hmac_key must NOT adopt the symlinked file's key
-                key = iso_mod.get_session_hmac_key(repo_root=td)
-                self.assertEqual(len(key), 32)
-                self.assertNotEqual(key, b"A" * 32)
+                # 1. get_session_hmac_key must NOT adopt the symlinked file's key
+                key1 = iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertEqual(len(key1), 32)
+                self.assertNotEqual(key1, b"A" * 32)
+
+                # 2. Second invocation must return the exact same persisted key
+                key2 = iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertEqual(key1, key2)
+
+                # 3. Snapshot creation and verification across separate process invocations must succeed
+                res_lock = run_isolation("lock", reports_dir, trusted_dir, cwd=td)
+                self.assertEqual(res_lock.returncode, 0, f"Lock failed: {res_lock.stderr}")
+
+                res_verify = run_isolation("verify", reports_dir, trusted_dir, cwd=td)
+                self.assertEqual(res_verify.returncode, 0, f"Verify failed: {res_verify.stderr}")
+                self.assertIn("Audit reports integrity confirmed", res_verify.stdout)
             finally:
-                if key_file.exists() or key_file.is_symlink():
+                if primary_key_file.exists() or primary_key_file.is_symlink():
                     try:
-                        key_file.unlink()
+                        primary_key_file.unlink()
                     except Exception:
                         pass
                 if target_decoy.exists():
@@ -239,6 +258,39 @@ class TestIsolation(unittest.TestCase):
                         target_decoy.unlink()
                     except Exception:
                         pass
+                alt_dir = key_dir / ".fallback_keys"
+                alt_key = alt_dir / f".repo_push_key_{root_hash}.secret"
+                if alt_key.exists():
+                    try:
+                        alt_key.unlink()
+                    except Exception:
+                        pass
+
+    def test_strictly_enforce_key_dir_permissions(self):
+        """Directories with permissive permissions (mode & 0o077 != 0) must be rejected on POSIX."""
+        if os.name == "nt":
+            self.skipTest("POSIX file permission bits not applicable on Windows")
+
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
+        iso_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iso_mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            permissive_dir = Path(td) / "permissive_keys"
+            permissive_dir.mkdir(mode=0o777, exist_ok=True)
+            os.chmod(str(permissive_dir), 0o777)
+            # Simulate a filesystem or environment where chmod cannot enforce 0700
+            orig_chmod = os.chmod
+            try:
+                def fake_chmod(path, mode):
+                    if str(path) == str(permissive_dir):
+                        return  # Ignore chmod to keep permissive
+                    return orig_chmod(path, mode)
+                os.chmod = fake_chmod
+                self.assertFalse(iso_mod.verify_and_prepare_key_dir(permissive_dir))
+            finally:
+                os.chmod = orig_chmod
 
 
 if __name__ == "__main__":

@@ -32,50 +32,115 @@ DEFAULT_REPORTS_DIR = os.path.abspath(os.path.join(".audit", "reports"))
 DEFAULT_TRUSTED_DIR = os.path.abspath(os.path.join(".audit", ".trusted"))
 
 
-def get_key_dir() -> Path:
+def get_candidate_key_dirs() -> list[Path]:
     """
-    Returns the private per-user directory for HMAC session keys.
-    Enforces 0700 permissions and verifies directory ownership.
+    Returns ordered list of candidate persistent key storage directories.
+    Prioritizes secure runtime and per-user directories.
     """
+    candidates = []
     if os.name != "nt":
         user_id = str(os.getuid()) if hasattr(os, "getuid") else "default"
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
-        if xdg_runtime and os.path.isdir(xdg_runtime):
-            base_dir = Path(xdg_runtime)
-        else:
-            base_dir = Path(tempfile.gettempdir())
-        key_dir = base_dir / f".repo_push_{user_id}"
+        if xdg_runtime:
+            candidates.append(Path(xdg_runtime) / "repo_push_keys")
+        candidates.append(Path(tempfile.gettempdir()) / f".repo_push_{user_id}")
+        try:
+            candidates.append(Path.home() / ".repo_push" / "keys")
+        except Exception:
+            pass
     else:
         username = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
         local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data and os.path.isdir(local_app_data):
-            base_dir = Path(local_app_data)
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "repo_push" / "keys")
+        candidates.append(Path(tempfile.gettempdir()) / f".repo_push_{username}")
+        try:
+            candidates.append(Path.home() / ".repo_push" / "keys")
+        except Exception:
+            pass
+    return candidates
+
+
+def verify_and_prepare_key_dir(d: Path) -> bool:
+    """
+    Verifies that directory d is safe for storing HMAC session keys:
+    - Must exist or be cleanly created
+    - Must NOT be a symbolic link
+    - Must be a directory
+    - On POSIX: must be owned by the current user and have strictly verified 0700 permissions.
+    Returns True if fully verified; False otherwise.
+    """
+    try:
+        if d.exists():
+            if d.is_symlink() or os.path.islink(str(d)):
+                return False
+            if not d.is_dir():
+                return False
+            if os.name != "nt":
+                if hasattr(os, "getuid"):
+                    st = os.lstat(str(d))
+                    if st.st_uid != os.getuid():
+                        return False
+                try:
+                    os.chmod(str(d), 0o700)
+                except OSError:
+                    return False
+                st = os.lstat(str(d))
+                # Strictly verify group and other have zero permissions (0700)
+                if (st.st_mode & 0o077) != 0:
+                    return False
+            return True
         else:
-            base_dir = Path(tempfile.gettempdir())
-        key_dir = base_dir / f".repo_push_{username}"
+            d.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if os.name != "nt":
+                try:
+                    os.chmod(str(d), 0o700)
+                except OSError:
+                    return False
+                st = os.lstat(str(d))
+                if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                    return False
+                if (st.st_mode & 0o077) != 0:
+                    return False
+            return True
+    except Exception:
+        return False
 
-    if key_dir.exists():
-        if key_dir.is_symlink() or os.path.islink(str(key_dir)):
-            raise RuntimeError(f"Security violation: HMAC key directory '{key_dir}' is a symlink.")
-        if not key_dir.is_dir():
-            raise RuntimeError(f"HMAC key path '{key_dir}' exists but is not a directory.")
-        if os.name != "nt" and hasattr(os, "getuid"):
-            st = os.lstat(str(key_dir))
-            if st.st_uid != os.getuid():
-                raise RuntimeError(f"Security violation: HMAC key directory '{key_dir}' is not owned by current user (UID {os.getuid()}).")
-            try:
-                os.chmod(str(key_dir), 0o700)
-            except Exception:
-                pass
-    else:
-        key_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if os.name != "nt":
-            try:
-                os.chmod(str(key_dir), 0o700)
-            except Exception:
-                pass
 
-    return key_dir
+def get_key_dir() -> Path:
+    """
+    Returns the primary verified private per-user directory for HMAC session keys.
+    Enforces 0700 permissions and verifies directory ownership.
+    Fails closed if no candidate directory can be securely established.
+    """
+    candidates = get_candidate_key_dirs()
+    for cand in candidates:
+        if verify_and_prepare_key_dir(cand):
+            return cand
+
+    raise RuntimeError(
+        "Failed to establish secure persistent HMAC key storage. "
+        "All candidate directories failed ownership, symlink, or restrictive permission (0700) checks."
+    )
+
+
+def get_candidate_key_files(root_hash: str) -> list[Path]:
+    """
+    Returns ordered list of stable, persistent file paths where the HMAC session key
+    may be stored or retrieved.
+    Each candidate directory provides a primary key file and a stable fallback key file.
+    """
+    key_files = []
+    candidates = get_candidate_key_dirs()
+    for cand in candidates:
+        if verify_and_prepare_key_dir(cand):
+            # Primary key file in this directory
+            key_files.append(cand / f".repo_push_key_{root_hash}.secret")
+            # Stable fallback key file in a verified subdirectory
+            alt_dir = cand / ".fallback_keys"
+            if verify_and_prepare_key_dir(alt_dir):
+                key_files.append(alt_dir / f".repo_push_key_{root_hash}.secret")
+    return key_files
 
 
 def get_session_hmac_key(repo_root=None):
@@ -94,24 +159,16 @@ def get_session_hmac_key(repo_root=None):
     root = os.path.abspath(repo_root or ".")
     root_hash = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
 
-    try:
-        key_dir = get_key_dir()
-    except Exception:
-        # If per-user directory is compromised or cannot be established, fallback to secure tempdir
-        key_dir = Path(tempfile.mkdtemp(prefix=".repo_push_keys_"))
-        if os.name != "nt":
-            try:
-                os.chmod(str(key_dir), 0o700)
-            except Exception:
-                pass
-
-    key_file = key_dir / f".repo_push_key_{root_hash}.secret"
+    candidate_files = get_candidate_key_files(root_hash)
+    if not candidate_files:
+        raise RuntimeError("Failed to establish secure persistent HMAC key storage across all candidate directories.")
 
     def validate_existing_key_file(path: Path) -> bytes | None:
         """
         Validates that path is a regular file, not a symlink, owned by the current user,
         and protected by restrictive permissions (0600 on POSIX).
-        Refuses to adopt keys that do not meet these criteria.
+        Returns 32-byte key if valid, None if untrusted/missing.
+        Raises RuntimeError if regular file owned by user is corrupted in length.
         """
         if not path.exists():
             return None
@@ -146,104 +203,84 @@ def get_session_hmac_key(repo_root=None):
             raise RuntimeError(f"Corrupted HMAC session key at '{path}': expected exactly 32 bytes, found {len(data)} bytes.")
         return None
 
-    if key_file.exists():
-        existing = validate_existing_key_file(key_file)
-        if existing is not None:
-            return existing
-        # Refuse to adopt invalid pre-created file, fallback to newly created key in secure temp file
-        temp_fd, temp_path = tempfile.mkstemp(prefix=f".repo_push_key_{root_hash}_fallback_", dir=str(key_dir))
-        try:
-            fallback_key = os.urandom(32)
-            os.write(temp_fd, fallback_key)
-            os.fsync(temp_fd)
-        finally:
-            os.close(temp_fd)
-        if os.name != "nt":
-            try:
-                os.chmod(temp_path, 0o600)
-            except Exception:
-                pass
-        return fallback_key
-
-    # Step 1: Write fresh 256-bit key to a unique temporary file in key_dir
-    new_key = os.urandom(32)
-    temp_key_file = key_dir / f".repo_push_key_{root_hash}_{os.getpid()}_{uuid.uuid4().hex}.tmp"
-    try:
-        temp_fd = os.open(str(temp_key_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        try:
-            os.write(temp_fd, new_key)
-            os.fsync(temp_fd)
-        finally:
-            os.close(temp_fd)
-        if os.name != "nt":
-            try:
-                os.chmod(str(temp_key_file), 0o600)
-            except Exception:
-                pass
-    except Exception as e:
-        raise RuntimeError(f"Failed to create temporary HMAC key file at '{temp_key_file}': {e}")
-
-    # Step 2: Atomically publish without overwriting an existing key
-    published = False
-    try:
-        if os.name == "nt":
-            try:
-                os.rename(str(temp_key_file), str(key_file))
-                published = True
-            except FileExistsError:
-                published = False
-        else:
-            try:
-                os.link(str(temp_key_file), str(key_file))
-                published = True
-            except FileExistsError:
-                published = False
-            except OSError:
-                if not key_file.exists():
-                    os.rename(str(temp_key_file), str(key_file))
-                    published = True
-                else:
-                    published = False
-    finally:
-        if temp_key_file.exists():
-            try:
-                os.unlink(str(temp_key_file))
-            except Exception:
-                pass
-
-    if published:
-        # Step 3: Verify that the persisted key can be read back reliably and meets all criteria
-        try:
-            persisted = validate_existing_key_file(key_file)
-            if persisted is None or persisted != new_key:
-                raise RuntimeError(f"Key verification failed: read-back key mismatch on '{key_file}'.")
-            return new_key
-        except Exception as e:
-            raise RuntimeError(f"Failed to verify persisted HMAC key on '{key_file}': {e}")
-
-    # Step 4: If another process won publication race, retry reading until valid with bounded timeout
-    timeout = 2.0
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        valid_key = validate_existing_key_file(key_file)
+    # Phase 1: Search for an EXISTING valid key in candidate files (in deterministic order)
+    for kf in candidate_files:
+        valid_key = validate_existing_key_file(kf)
         if valid_key is not None:
             return valid_key
-        time.sleep(0.01)
 
-    # Fail closed / fallback if valid key is not available
-    temp_fd, temp_path = tempfile.mkstemp(prefix=f".repo_push_key_{root_hash}_fallback_", dir=str(key_dir))
-    try:
-        fallback_key = os.urandom(32)
-        os.write(temp_fd, fallback_key)
-        os.fsync(temp_fd)
-    finally:
-        os.close(temp_fd)
-    if os.name != "nt":
+    # Phase 2: If no existing key exists, atomically create and persist a new 32-byte key
+    # at the first untainted candidate file location
+    for kf in candidate_files:
+        if kf.exists():
+            # Exists but failed validation (e.g. pre-created symlink, wrong owner, bad permissions).
+            # Refuse to touch, overwrite, or adopt. Skip to next candidate path.
+            continue
+
+        parent_dir = kf.parent
+        new_key = os.urandom(32)
+        temp_key_file = parent_dir / f".repo_push_key_{root_hash}_{os.getpid()}_{uuid.uuid4().hex}.tmp"
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
         try:
-            os.chmod(temp_path, 0o600)
+            temp_fd = os.open(str(temp_key_file), flags, 0o600)
+            try:
+                os.write(temp_fd, new_key)
+                os.fsync(temp_fd)
+            finally:
+                os.close(temp_fd)
+            if os.name != "nt":
+                try:
+                    os.chmod(str(temp_key_file), 0o600)
+                except Exception:
+                    pass
         except Exception:
-            pass
-    return fallback_key
+            continue
+
+        published = False
+        try:
+            if os.name == "nt":
+                try:
+                    os.rename(str(temp_key_file), str(kf))
+                    published = True
+                except FileExistsError:
+                    published = False
+            else:
+                try:
+                    os.link(str(temp_key_file), str(kf))
+                    published = True
+                except FileExistsError:
+                    published = False
+                except OSError:
+                    if not kf.exists():
+                        os.rename(str(temp_key_file), str(kf))
+                        published = True
+                    else:
+                        published = False
+        finally:
+            if temp_key_file.exists():
+                try:
+                    os.unlink(str(temp_key_file))
+                except Exception:
+                    pass
+
+        if published:
+            persisted = validate_existing_key_file(kf)
+            if persisted is not None and persisted == new_key:
+                return new_key
+
+        # If another concurrent process published kf first, wait and read back
+        timeout = 2.0
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            valid_key = validate_existing_key_file(kf)
+            if valid_key is not None:
+                return valid_key
+            time.sleep(0.01)
+
+    raise RuntimeError(
+        "Failed to establish secure persistent HMAC key storage: "
+        "all candidate key paths are unavailable, untrusted, or failed publication."
+    )
 
 
 def hash_file(filepath):

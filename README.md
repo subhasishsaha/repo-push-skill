@@ -217,7 +217,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   ├── repo-push.schema.json                  # Schema for config.yaml
 │   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
-├── tests/                                     # Automated test suite (44 unit & integration tests across 6 modules)
+├── tests/                                     # Automated test suite (45 unit & integration tests across 6 modules)
 │   ├── test_isolation.py                      # Fail-closed behavioral isolation & HMAC tests
 │   ├── test_config_validator.py               # Schema, duplicate target, and path traversal tests
 │   ├── test_config_generator.py               # Deterministic config generator tests
