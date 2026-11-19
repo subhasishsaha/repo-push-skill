@@ -135,6 +135,7 @@ actions:
 - **Two Distinct Publishing Modes:**
   - `history_preserving` (default): Publishes a new release commit with exclusions applied, while retaining full prior commit ancestry.
   - `clean_snapshot`: Publishes a single orphan commit with zero prior ancestry. Forbids `--tags` upfront to prevent leaking excluded files or history through existing Git tags.
+- **Cross-Platform Dual-OS CI Matrix:** Continuously validated across Linux (`ubuntu-latest`) and Windows (`windows-latest`) on Python 3.10, 3.11, and 3.12, actively exercising Win32 Security APIs, DACL enforcement, token layout parsing, and isolated git publishing on real Windows runners.
 
 ---
 
@@ -218,7 +219,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 ├── .gitignore                                 # Clean gitignore configuration
 ├── .editorconfig                              # Standardized editor config
 ├── .github/
-│   ├── workflows/ci.yml                       # Multi-version CI test & audit pipeline
+│   ├── workflows/ci.yml                       # Dual-OS (Ubuntu & Windows) CI pipeline across Python 3.10–3.12
 │   └── dependabot.yml                         # Automated dependency alerts
 │
 ├── .repo-push/                                # Active repository publishing config
