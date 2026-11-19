@@ -265,8 +265,28 @@ def _parse_ace_record(pAce_val: int, advapi32, kernel32):
             "sid": None,
         }
 
+    advapi32.IsValidSid.argtypes = [ctypes.c_void_p]
+    advapi32.IsValidSid.restype = wintypes.BOOL
+    advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+    advapi32.GetLengthSid.restype = wintypes.DWORD
+
     sid_ptr = ctypes.c_void_p(pAce_val + sid_offset)
     if not advapi32.IsValidSid(sid_ptr):
+        return {
+            "is_valid": False,
+            "ace_type": ace_type,
+            "ace_flags": ace_flags,
+            "ace_size": ace_size,
+            "is_allow": is_allow,
+            "is_deny": is_deny,
+            "is_supported": is_supported,
+            "is_object": is_object,
+            "sid": None,
+        }
+
+    # Ensure the full variable-length SID body fits completely within the declared ACE size
+    sid_length = advapi32.GetLengthSid(sid_ptr)
+    if sid_offset + sid_length > ace_size:
         return {
             "is_valid": False,
             "ace_type": ace_type,
@@ -316,10 +336,8 @@ def verify_windows_dacl(path: Path) -> bool:
     - Explicitly resolves the current process user SID using Windows Token APIs.
     - Inspects AceType and parses each ACE using its correct structure.
     - Explicitly rejects unsupported or malformed ACE types (e.g. object ACEs, callback ACEs).
-    - Handles allow and deny ACEs deliberately:
-      - Deny ACEs denying the current user, SYSTEM, or Administrators cause verification to FAIL.
-      - Allow ACEs granting access to broad/shared groups (Everyone, Users, Guests, etc.) or
-        any unapproved user SID cause verification to FAIL.
+    - Explicitly rejects ANY Deny ACE (the security specification requires an allow-only DACL).
+    - Validates that allow ACEs grant access strictly to authorized principals.
     - Allows only: Current User SID, SYSTEM (S-1-5-18), Administrators (S-1-5-32-544),
       Creator Owner (S-1-3-0), and verified logon session SID of current process context.
     - Fails closed if any ACE cannot be safely interpreted or if user SID cannot be resolved.
@@ -428,13 +446,11 @@ def verify_windows_dacl(path: Path) -> bool:
                 if not ace_sid:
                     return False
 
-                # 3. Handle Deny ACEs deliberately
+                # 3. Reject ANY Deny ACE outright:
+                # The security specification requires an allow-only DACL. Any Deny ACE (including
+                # broad-principal denies like Everyone) can override allow permissions or alter access semantics.
                 if ace["is_deny"]:
-                    # Denying access to current user, SYSTEM, or Administrators invalidates security
-                    if ace_sid == user_sid or ace_sid in allowed_system_sids or ace_sid in context_sids:
-                        return False
-                    # Denying an unauthorized/forbidden entity does not grant access
-                    continue
+                    return False
 
                 # 4. Handle Allow ACEs
                 if ace["is_allow"]:

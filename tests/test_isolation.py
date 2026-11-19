@@ -355,6 +355,21 @@ class TestIsolation(unittest.TestCase):
         rec_malformed = iso_mod._parse_ace_record(ctypes.cast(struct.pack("<BBH", 0x00, 0x00, 2), ctypes.c_void_p).value, advapi32, kernel32)
         self.assertFalse(rec_malformed["is_valid"], "ACE with size < 4 must be flagged as invalid")
 
+        # Unit test _parse_ace_record with truncated SID (where sid_offset + sid_length > ace_size)
+        advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+        advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+        advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+        advapi32.GetLengthSid.restype = wintypes.DWORD
+
+        pSid_test = ctypes.c_void_p()
+        self.assertTrue(advapi32.ConvertStringSidToSidW("S-1-5-21-1-2-3-4", ctypes.byref(pSid_test)))
+        sid_test_len = advapi32.GetLengthSid(pSid_test)
+        sid_test_bytes = bytes((ctypes.c_byte * sid_test_len).from_address(pSid_test.value))
+        # Declare ace_size = 20 bytes (less than 8 + 28 = 36 bytes required for full SID)
+        truncated_ace = struct.pack("<BBHI", 0x00, 0x00, 20, 0x1200A9) + sid_test_bytes[:12]
+        rec_truncated = iso_mod._parse_ace_record(ctypes.cast(truncated_ace, ctypes.c_void_p).value, advapi32, kernel32)
+        self.assertFalse(rec_truncated["is_valid"], "ACE whose declared size cannot contain full SID must be flagged as invalid")
+
         with tempfile.TemporaryDirectory() as td:
             test_dir = Path(td) / "sec_keys"
             test_dir.mkdir(parents=True, exist_ok=True)
@@ -414,14 +429,21 @@ class TestIsolation(unittest.TestCase):
                 self.assertEqual(ret, 0, "Failed to apply Object ACE DACL via SetNamedSecurityInfoW")
                 self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject Object ACE as unsupported on key storage")
 
-                # 7. Deny ACE on current user must be handled deliberately and cause verification failure
+                # 7. Broad-principal Deny ACE (*S-1-1-0) even alongside an allow ACE for current user must be rejected outright
+                self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
+                self.assertTrue(iso_mod.verify_windows_dacl(test_file))
+                res = subprocess.run(["icacls", str(test_file), "/deny", "*S-1-1-0:(R)"], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, f"Failed to apply Deny ACE on Everyone via icacls: {res.stderr}")
+                self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject file containing a Deny ACE for Everyone")
+
+                # 8. User-specific Deny ACE must also be rejected outright
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
                 self.assertTrue(iso_mod.verify_windows_dacl(test_file))
                 res = subprocess.run(["icacls", str(test_file), "/deny", f"*{user_sid}:(R)"], capture_output=True, text=True)
                 self.assertEqual(res.returncode, 0, f"Failed to apply Deny ACE on user via icacls: {res.stderr}")
                 self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject file where user is denied access")
 
-                # 8. Re-enforcing strict DACL must completely restore verified status
+                # 9. Re-enforcing strict DACL must completely restore verified status
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_dir, is_dir=True))
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
                 self.assertTrue(iso_mod.verify_windows_dacl(test_dir))
