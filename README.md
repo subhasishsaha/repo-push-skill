@@ -144,7 +144,7 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 
 1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
 2. **Layer 2 (OS Read-Only Permission Barrier):** `.audit/reports/` and `.audit/.trusted/` are marked read-only using filesystem attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 is recorded prior to remediation. The ephemeral 256-bit session secret key is stored outside the repository in a private per-user directory (`0700` permissions) and protected by `lstat` checks (rejecting symlinks, non-regular files, unowned files, and permissive modes) with atomic non-overwriting publication. If tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup directory is independently verified against the authenticated manifest.
+3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 is recorded prior to remediation. The ephemeral 256-bit session secret key is stored outside the repository in verified private per-user directories (`0700` permissions on POSIX, verified via `lstat` to reject symlinks, unowned files, and permissive modes). Session keys are managed across deterministic candidate paths (primary path and stable `.fallback_keys/` directory) with atomic non-overwriting publication and `os.O_BINARY` creation. If tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup directory is independently verified against the authenticated manifest.
 
 > [!NOTE]
 > **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, filesystem permission attributes and HMAC signatures provide tamper-detection and guardrails against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account.
@@ -232,7 +232,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │       ├── scripts/                           # Production-grade verification & publishing tooling
 │       │   ├── generate_config.py             # Deterministic remote & platform discovery
 │       │   ├── validate_config.py             # PyYAML & JSON Schema validator & cross-referencer
-│       │   ├── enforce_isolation.py           # Fail-closed OS file locking, HMAC authentication & rollback
+│       │   ├── enforce_isolation.py           # Fail-closed OS file locking, persistent HMAC authentication & rollback
 │       │   ├── git_publisher.py               # Isolated Git worktree publisher with persistent kernel-level OS file locking
 │       │   └── audit_runner.py                # 6-Gate canonical evidence-based verification engine
 │       │
