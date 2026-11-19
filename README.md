@@ -11,9 +11,6 @@ The primary coordinator acts as the **Orchestrator**, actively spawning and mana
 
 ## 📦 Installation & Setup
 
-`repo-push` can be installed either as an **agent skill** or as an **Antigravity plugin**:
-
-### Option 1: Global Skill Installation (Universal)
 Clone the repository and ask your AI agent to install it into your global skills directory:
 ```bash
 git clone https://github.com/subhasishsaha/repo-push-skill.git
@@ -25,13 +22,6 @@ Your agent will automatically copy `skills/repo-push/` to your environment's glo
 - **Antigravity / Gemini CLI:** `~/.gemini/config/skills/repo-push/`
 - **Claude Code:** `~/.claude/skills/repo-push/`
 - **Cursor / Windsurf / Copilot:** `.cursor/skills/repo-push/` or reference `skills/repo-push/SKILL.md` in `.cursorrules` / `.windsurfrules`
-
-### Option 2: Antigravity Plugin Installation
-`repo-push` includes a canonical `plugin.json` manifest. You can install it as an integrated plugin:
-```bash
-antigravity plugin install https://github.com/subhasishsaha/repo-push-skill.git
-```
-Or open the cloned folder in Antigravity IDE—it automatically detects `plugin.json` and loads all associated skills, schemas, and configurations.
 
 ---
 
@@ -213,7 +203,6 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 ## 📂 Repository Structure
 
 ```text
-├── plugin.json                                # Plugin manifest for Antigravity & Agent ecosystems
 ├── README.md                                  # Repository overview and documentation
 ├── LICENSE                                    # Apache-2.0 license
 ├── .gitignore                                 # Clean gitignore configuration
@@ -282,7 +271,7 @@ This skill operates seamlessly across any agent harness:
 | **Cursor** | Context rules | Include reference in `.cursorrules` or `.cursor/skills/` |
 | **Windsurf** | Project rule | Mention skill workflow in `.windsurfrules` |
 | **GitHub Copilot** | Repository instructions | Reference in `.github/copilot-instructions.md` |
-| **Antigravity / Gemini** | Plugin or workspace skill | Mount `plugin.json` or place in `.agents/skills/` |
+| **Antigravity / Gemini** | Global or workspace skill | Place in `~/.gemini/config/skills/repo-push/` or `.agents/skills/` |
 | **Cline / Roo Code** | Custom instructions | Point to `skills/repo-push/SKILL.md` in custom instructions |
 | **Aider** | Command / instructions | Pass `skills/repo-push/SKILL.md` to `/read` or `.aider.conf.yml` |
 | **Custom Agent / Swarms** | System prompt / Tool calling | Point LLM to `SKILL.md` and equip standard shell & file tools |
