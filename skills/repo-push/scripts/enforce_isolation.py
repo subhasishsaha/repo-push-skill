@@ -62,106 +62,264 @@ def get_candidate_key_dirs() -> list[Path]:
     return candidates
 
 
-def is_forbidden_windows_principal(t_lower: str) -> bool:
+def _get_current_user_and_context_sids_windows():
     """
-    Checks if a Windows principal name or SID represents a broad, shared,
-    or untrusted group.
+    On Windows, resolves the current process user's exact SID and security context SIDs
+    (logon session SID, restricted capabilities) using Win32 Token APIs.
+    Returns (user_sid_str, set_of_context_sids).
     """
-    forbidden_names = {
-        "everyone", "users", "authenticated users", "guests",
-        "anonymous logon", "network", "interactive", "batch",
-        "service", "world", "domain users", "domain guests"
-    }
-    forbidden_sids = {
-        "s-1-1-0", "*s-1-1-0", "s-1-5-11", "*s-1-5-11",
-        "s-1-5-32-545", "*s-1-5-32-545", "s-1-5-32-546", "*s-1-5-32-546",
-        "s-1-5-7", "*s-1-5-7", "s-1-5-4", "*s-1-5-4", "s-1-5-2", "*s-1-5-2",
-        "s-1-5-3", "*s-1-5-3", "s-1-5-6", "*s-1-5-6"
-    }
-    if t_lower in forbidden_sids:
-        return True
-    name_part = t_lower.split("\\")[-1]
-    if name_part in forbidden_names:
-        return True
-    if "everyone" in t_lower or "authenticated users" in t_lower:
-        return True
-    return False
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.windll.advapi32
+    kernel32 = ctypes.windll.kernel32
+
+    GetCurrentProcess = kernel32.GetCurrentProcess
+    GetCurrentProcess.restype = wintypes.HANDLE
+
+    OpenProcessToken = advapi32.OpenProcessToken
+    OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    OpenProcessToken.restype = wintypes.BOOL
+
+    GetTokenInformation = advapi32.GetTokenInformation
+    GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    GetTokenInformation.restype = wintypes.BOOL
+
+    ConvertSidToStringSidW = advapi32.ConvertSidToStringSidW
+    ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+    ConvertSidToStringSidW.restype = wintypes.BOOL
+
+    LocalFree = kernel32.LocalFree
+    LocalFree.argtypes = [ctypes.c_void_p]
+
+    CloseHandle = kernel32.CloseHandle
+    CloseHandle.argtypes = [wintypes.HANDLE]
+    CloseHandle.restype = wintypes.BOOL
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_USER(ctypes.Structure):
+        _fields_ = [("User", SID_AND_ATTRIBUTES)]
+
+    class TOKEN_LOGON_SID(ctypes.Structure):
+        _fields_ = [("LogonSid", SID_AND_ATTRIBUTES)]
+
+    class TOKEN_GROUPS(ctypes.Structure):
+        _fields_ = [("GroupCount", wintypes.DWORD), ("Groups", SID_AND_ATTRIBUTES * 1)]
+
+    hToken = wintypes.HANDLE()
+    TOKEN_QUERY = 0x0008
+    if not OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(hToken)):
+        return None, set()
+
+    try:
+        # 1. Resolve TokenUser (1)
+        cbNeeded = wintypes.DWORD()
+        GetTokenInformation(hToken, 1, None, 0, ctypes.byref(cbNeeded))
+        if cbNeeded.value == 0:
+            return None, set()
+        buf_user = (ctypes.c_char * cbNeeded.value)()
+        if not GetTokenInformation(hToken, 1, buf_user, cbNeeded.value, ctypes.byref(cbNeeded)):
+            return None, set()
+
+        token_user = ctypes.cast(buf_user, ctypes.POINTER(TOKEN_USER)).contents
+        str_user_sid = wintypes.LPWSTR()
+        if not ConvertSidToStringSidW(token_user.User.Sid, ctypes.byref(str_user_sid)):
+            return None, set()
+        user_sid = str_user_sid.value.upper()
+        LocalFree(str_user_sid)
+
+        context_sids = {user_sid}
+
+        # 2. Resolve TokenLogonSid (28)
+        cbNeeded = wintypes.DWORD()
+        GetTokenInformation(hToken, 28, None, 0, ctypes.byref(cbNeeded))
+        if cbNeeded.value > 0:
+            buf_logon = (ctypes.c_char * cbNeeded.value)()
+            if GetTokenInformation(hToken, 28, buf_logon, cbNeeded.value, ctypes.byref(cbNeeded)):
+                logon_info = ctypes.cast(buf_logon, ctypes.POINTER(TOKEN_LOGON_SID)).contents
+                str_logon = wintypes.LPWSTR()
+                if ConvertSidToStringSidW(logon_info.LogonSid.Sid, ctypes.byref(str_logon)):
+                    context_sids.add(str_logon.value.upper())
+                    LocalFree(str_logon)
+
+        # 3. Resolve TokenCapabilities (19) if in AppContainer / restricted sandbox
+        cbNeeded = wintypes.DWORD()
+        GetTokenInformation(hToken, 19, None, 0, ctypes.byref(cbNeeded))
+        if cbNeeded.value > 0:
+            buf_caps = (ctypes.c_char * cbNeeded.value)()
+            if GetTokenInformation(hToken, 19, buf_caps, cbNeeded.value, ctypes.byref(cbNeeded)):
+                tg = ctypes.cast(buf_caps, ctypes.POINTER(TOKEN_GROUPS)).contents
+                if tg.GroupCount > 0:
+                    groups = ctypes.cast(ctypes.byref(tg.Groups), ctypes.POINTER(SID_AND_ATTRIBUTES * tg.GroupCount)).contents
+                    for i in range(tg.GroupCount):
+                        str_cap = wintypes.LPWSTR()
+                        if ConvertSidToStringSidW(groups[i].Sid, ctypes.byref(str_cap)):
+                            context_sids.add(str_cap.value.upper())
+                            LocalFree(str_cap)
+
+        return user_sid, context_sids
+    finally:
+        CloseHandle(hToken)
 
 
 def verify_windows_dacl(path: Path) -> bool:
     """
     Verifies that on Windows, the DACL for path is strictly restricted:
-    - Must NOT grant access to broad/untrusted principals (Everyone, Users, Authenticated Users, Guests, etc.)
-    - Must ONLY grant access to the current user, SYSTEM, Administrators, Creator Owner, or user-specific logon SIDs.
+    - Queries the DACL directly via Win32 GetNamedSecurityInfoW API.
+    - Explicitly resolves the current process user SID using Windows Token APIs.
+    - Rejects any ACE that grants access to broad/shared groups:
+      Everyone (S-1-1-0), Users (S-1-5-32-545), Authenticated Users (S-1-5-11),
+      Guests (S-1-5-32-546), Anonymous (S-1-5-7), Network (S-1-5-2), Interactive (S-1-5-4), etc.
+    - Rejects any ACE whose SID belongs to another user account (must match current user SID).
+    - Allows only: Current User SID, SYSTEM (S-1-5-18), Administrators (S-1-5-32-544),
+      Creator Owner (S-1-3-0), and verified logon/capability SIDs from current process token.
     - Returns False if untrusted access is detected or if verification fails.
     """
     if os.name != "nt":
         return True
+
     try:
-        is_dir = path.is_dir()
-        target_name = "." if is_dir else path.name
-        cwd = str(path) if is_dir else str(path.parent)
-        res = subprocess.run(["icacls", target_name], cwd=cwd, capture_output=True, text=True, timeout=10)
-        if res.returncode != 0:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.windll.advapi32
+        kernel32 = ctypes.windll.kernel32
+
+        user_sid, context_sids = _get_current_user_and_context_sids_windows()
+        if not user_sid:
             return False
 
-        lines = res.stdout.splitlines()
-        username = (os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser() or "").lower()
-        user_domain = (os.environ.get("USERDOMAIN") or "").lower()
+        # Strictly forbidden SIDs representing broad, shared, or untrusted access
+        forbidden_sids = {
+            "S-1-1-0",        # Everyone / World
+            "S-1-5-11",       # Authenticated Users
+            "S-1-5-32-545",   # BUILTIN\Users
+            "S-1-5-32-546",   # BUILTIN\Guests
+            "S-1-5-7",        # Anonymous Logon
+            "S-1-5-2",        # Network Logon
+            "S-1-5-4",        # Interactive Logon
+            "S-1-5-3",        # Batch Logon
+            "S-1-5-6",        # Service Logon
+        }
 
-        has_user_or_system = False
-        found_aces = False
+        # Allowed system principals
+        allowed_system_sids = {
+            "S-1-5-18",       # NT AUTHORITY\SYSTEM
+            "S-1-5-32-544",   # BUILTIN\Administrators
+            "S-1-3-0",        # CREATOR OWNER
+        }
 
-        for line in lines:
-            if ":(" not in line:
-                continue
-            clean_line = line.strip()
-            if clean_line.startswith(target_name):
-                clean_line = clean_line[len(target_name):].strip()
+        GetNamedSecurityInfoW = advapi32.GetNamedSecurityInfoW
+        GetNamedSecurityInfoW.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p)
+        ]
+        GetNamedSecurityInfoW.restype = wintypes.DWORD
 
-            trustee = clean_line.split(":(")[0].strip()
-            if not trustee:
-                continue
-            found_aces = True
-            t_lower = trustee.lower()
+        ConvertSidToStringSidW = advapi32.ConvertSidToStringSidW
+        ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        ConvertSidToStringSidW.restype = wintypes.BOOL
 
-            if is_forbidden_windows_principal(t_lower):
+        LocalFree = kernel32.LocalFree
+        LocalFree.argtypes = [ctypes.c_void_p]
+
+        class ACL_SIZE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("AceCount", wintypes.DWORD),
+                ("AclBytesInUse", wintypes.DWORD),
+                ("AclBytesFree", wintypes.DWORD),
+            ]
+
+        class ACE_HEADER(ctypes.Structure):
+            _fields_ = [
+                ("AceType", wintypes.BYTE),
+                ("AceFlags", wintypes.BYTE),
+                ("AceSize", wintypes.WORD),
+            ]
+
+        class ACCESS_ALLOWED_ACE(ctypes.Structure):
+            _fields_ = [
+                ("Header", ACE_HEADER),
+                ("Mask", wintypes.DWORD),
+                ("SidStart", wintypes.DWORD),
+            ]
+
+        GetAclInformation = advapi32.GetAclInformation
+        GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.c_int]
+        GetAclInformation.restype = wintypes.BOOL
+
+        GetAce = advapi32.GetAce
+        GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+        GetAce.restype = wintypes.BOOL
+
+        pDacl = ctypes.c_void_p()
+        pSD = ctypes.c_void_p()
+        SE_FILE_OBJECT = 1
+        DACL_SECURITY_INFORMATION = 0x00000004
+
+        res = GetNamedSecurityInfoW(
+            str(path), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            None, None, ctypes.byref(pDacl), None, ctypes.byref(pSD)
+        )
+        if res != 0 or not pDacl.value:
+            if pSD.value:
+                LocalFree(pSD)
+            return False
+
+        try:
+            size_info = ACL_SIZE_INFORMATION()
+            AclSizeInformation = 2
+            if not GetAclInformation(pDacl, ctypes.byref(size_info), ctypes.sizeof(size_info), AclSizeInformation):
                 return False
 
-            if t_lower in (
-                "nt authority\\system",
-                "system",
-                "s-1-5-18",
-                "*s-1-5-18",
-                "builtin\\administrators",
-                "administrators",
-                "s-1-5-32-544",
-                "*s-1-5-32-544",
-                "creator owner",
-                "s-1-3-0",
-                "*s-1-3-0",
-            ):
-                has_user_or_system = True
-                continue
+            if size_info.AceCount == 0:
+                return False
 
-            # Current user check
-            if username and (
-                t_lower == username
-                or t_lower.endswith("\\" + username)
-                or t_lower == f"{user_domain}\\{username}"
-                or (user_domain and t_lower == f"{user_domain}\\")
-            ):
-                has_user_or_system = True
-                continue
+            has_user_or_system = False
 
-            # User session / sandbox capability SIDs (S-1-5-21-..., S-1-15-..., S-1-5-5-...)
-            if t_lower.startswith("s-1-5-21-") or t_lower.startswith("s-1-15-") or t_lower.startswith("s-1-5-5-"):
-                continue
+            for i in range(size_info.AceCount):
+                pAce = ctypes.c_void_p()
+                if not GetAce(pDacl, i, ctypes.byref(pAce)):
+                    return False
 
-            # Unrecognized principal -> fail closed
-            return False
+                ace_header = ctypes.cast(pAce, ctypes.POINTER(ACE_HEADER)).contents
+                sid_ptr = pAce.value + ACCESS_ALLOWED_ACE.SidStart.offset
+                str_sid = wintypes.LPWSTR()
+                if not ConvertSidToStringSidW(ctypes.c_void_p(sid_ptr), ctypes.byref(str_sid)):
+                    return False
 
-        return found_aces and has_user_or_system
+                ace_sid = str_sid.value.upper()
+                LocalFree(str_sid)
+
+                # 1. Reject if SID is in forbidden broad groups
+                if ace_sid in forbidden_sids:
+                    return False
+
+                # 2. Check if SID is an allowed system principal
+                if ace_sid in allowed_system_sids:
+                    has_user_or_system = True
+                    continue
+
+                # 3. Check if SID matches the current user's EXACT SID
+                if ace_sid == user_sid:
+                    has_user_or_system = True
+                    continue
+
+                # 4. Check if SID is an exact verified logon session or capability SID of this security context
+                if ace_sid in context_sids:
+                    continue
+
+                # Any other user SID (including any other local/domain user account!) is REJECTED
+                return False
+
+            return has_user_or_system
+        finally:
+            if pSD.value:
+                LocalFree(pSD)
     except Exception:
         return False
 
@@ -170,46 +328,95 @@ def enforce_windows_dacl(path: Path, is_dir: bool = False) -> bool:
     """
     On Windows, applies restrictive DACL to path:
     - Disables inheritance and strips broad permissions (/inheritance:r)
-    - Removes explicit broad group grants (/remove:g Everyone, Users, Authenticated Users, Guests)
-    - Grants Full Control only to current user, SYSTEM (*S-1-5-18), and Administrators (*S-1-5-32-544)
+    - Discovers all existing ACE SIDs in the DACL via Win32 security APIs and removes
+      any unapproved SID (/remove *<SID>)
+    - Grants Full Control strictly to current user SID (*<user_sid>), SYSTEM (*S-1-5-18),
+      and Administrators (*S-1-5-32-544)
     """
     if os.name != "nt":
         return True
-    user = os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser()
-    if not user:
+    user_sid, _ = _get_current_user_and_context_sids_windows()
+    user_target = f"*{user_sid}" if user_sid else (os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser())
+    if not user_target:
         return False
-    domain = os.environ.get("USERDOMAIN")
-    qualified_user = f"{domain}\\{user}" if domain else user
     perm = "(OI)(CI)F" if is_dir else "F"
     try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.windll.advapi32
+        kernel32 = ctypes.windll.kernel32
+
         # 1. Strip inherited permissions
         subprocess.run(["icacls", str(path), "/inheritance:r"], capture_output=True, timeout=10)
 
-        # 2. Strip any explicit broad group grants
+        # 2. Query DACL and find any unapproved SIDs
+        pDacl = ctypes.c_void_p()
+        pSD = ctypes.c_void_p()
+        SE_FILE_OBJECT = 1
+        DACL_SECURITY_INFORMATION = 0x00000004
+        res = advapi32.GetNamedSecurityInfoW(
+            str(path), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            None, None, ctypes.byref(pDacl), None, ctypes.byref(pSD)
+        )
+        if res == 0 and pDacl.value:
+            class ACL_SIZE_INFORMATION(ctypes.Structure):
+                _fields_ = [("AceCount", wintypes.DWORD), ("AclBytesInUse", wintypes.DWORD), ("AclBytesFree", wintypes.DWORD)]
+            class ACCESS_ALLOWED_ACE(ctypes.Structure):
+                _fields_ = [("Header", ctypes.c_byte * 4), ("Mask", wintypes.DWORD), ("SidStart", wintypes.DWORD)]
+
+            size_info = ACL_SIZE_INFORMATION()
+            if advapi32.GetAclInformation(pDacl, ctypes.byref(size_info), ctypes.sizeof(size_info), 2):
+                unapproved_sids = set()
+                allowed_sids = {user_sid, "S-1-5-18", "S-1-5-32-544", "S-1-3-0"}
+                for i in range(size_info.AceCount):
+                    pAce = ctypes.c_void_p()
+                    if advapi32.GetAce(pDacl, i, ctypes.byref(pAce)):
+                        sid_ptr = pAce.value + ACCESS_ALLOWED_ACE.SidStart.offset
+                        str_sid = wintypes.LPWSTR()
+                        if advapi32.ConvertSidToStringSidW(ctypes.c_void_p(sid_ptr), ctypes.byref(str_sid)):
+                            s_val = str_sid.value.upper()
+                            kernel32.LocalFree(str_sid)
+                            if s_val not in allowed_sids:
+                                unapproved_sids.add(s_val)
+                for u in unapproved_sids:
+                    subprocess.run(["icacls", str(path), "/remove", f"*{u}"], capture_output=True, timeout=10)
+
+            if pSD.value:
+                kernel32.LocalFree(pSD)
+
+        # 3. Explicitly remove well-known broad groups by name and SID as extra defense
         subprocess.run(
             [
                 "icacls",
                 str(path),
-                "/remove:g",
+                "/remove",
                 "*S-1-1-0",
+                "/remove",
                 "*S-1-5-32-545",
+                "/remove",
                 "*S-1-5-11",
+                "/remove",
                 "*S-1-5-32-546",
+                "/remove",
                 "Users",
+                "/remove",
                 "Everyone",
+                "/remove",
                 "Authenticated Users",
+                "/remove",
                 "Guests",
             ],
             capture_output=True,
             timeout=10,
         )
 
-        # 3. Grant Full Control strictly to current user, SYSTEM, Administrators
+        # 4. Grant Full Control strictly to current user's exact SID, SYSTEM, Administrators
         cmd_grant = [
             "icacls",
             str(path),
             "/grant:r",
-            f"{qualified_user}:{perm}",
+            f"{user_target}:{perm}",
             "/grant:r",
             f"*S-1-5-18:{perm}",
             "/grant:r",

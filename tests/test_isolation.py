@@ -320,7 +320,7 @@ class TestIsolation(unittest.TestCase):
                 os.chmod = orig_chmod
 
     def test_windows_dacl_enforcement(self):
-        """Windows DACL verification must reject broad principals (Everyone, Users) and accept restricted DACL."""
+        """Windows DACL verification must reject broad principals (Everyone, Users), arbitrary user SIDs, and accept restricted DACL."""
         if os.name != "nt":
             self.skipTest("Windows DACL enforcement test only runs on Windows (nt)")
 
@@ -329,6 +329,12 @@ class TestIsolation(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
         iso_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(iso_mod)
+
+        # Verify current user SID resolution
+        user_sid, context_sids = iso_mod._get_current_user_and_context_sids_windows()
+        self.assertIsNotNone(user_sid)
+        self.assertTrue(user_sid.startswith("S-1-"))
+        self.assertIn(user_sid, context_sids)
 
         with tempfile.TemporaryDirectory() as td:
             test_dir = Path(td) / "sec_keys"
@@ -353,7 +359,12 @@ class TestIsolation(unittest.TestCase):
                 if res.returncode == 0:
                     self.assertFalse(iso_mod.verify_windows_dacl(test_dir))
 
-                # 4. Re-enforcing strict DACL must restore verified status
+                # 4. Granting another user-specific SID (e.g. docker-users with S-1-5-21-... SID) must be rejected
+                res = subprocess.run(["icacls", str(test_file), "/grant", "docker-users:(R)"], capture_output=True, text=True)
+                if res.returncode == 0:
+                    self.assertFalse(iso_mod.verify_windows_dacl(test_file))
+
+                # 5. Re-enforcing strict DACL must restore verified status
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_dir, is_dir=True))
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
                 self.assertTrue(iso_mod.verify_windows_dacl(test_dir))
