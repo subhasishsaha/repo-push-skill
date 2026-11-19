@@ -89,6 +89,10 @@ def _get_current_user_and_context_sids_windows():
     ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
     ConvertSidToStringSidW.restype = wintypes.BOOL
 
+    IsValidSid = advapi32.IsValidSid
+    IsValidSid.argtypes = [ctypes.c_void_p]
+    IsValidSid.restype = wintypes.BOOL
+
     LocalFree = kernel32.LocalFree
     LocalFree.argtypes = [ctypes.c_void_p]
 
@@ -101,9 +105,6 @@ def _get_current_user_and_context_sids_windows():
 
     class TOKEN_USER(ctypes.Structure):
         _fields_ = [("User", SID_AND_ATTRIBUTES)]
-
-    class TOKEN_LOGON_SID(ctypes.Structure):
-        _fields_ = [("LogonSid", SID_AND_ATTRIBUTES)]
 
     class TOKEN_GROUPS(ctypes.Structure):
         _fields_ = [("GroupCount", wintypes.DWORD), ("Groups", SID_AND_ATTRIBUTES * 1)]
@@ -124,6 +125,8 @@ def _get_current_user_and_context_sids_windows():
             return None, set()
 
         token_user = ctypes.cast(buf_user, ctypes.POINTER(TOKEN_USER)).contents
+        if not token_user.User.Sid or not advapi32.IsValidSid(token_user.User.Sid):
+            return None, set()
         str_user_sid = wintypes.LPWSTR()
         if not ConvertSidToStringSidW(token_user.User.Sid, ctypes.byref(str_user_sid)):
             return None, set()
@@ -132,36 +135,178 @@ def _get_current_user_and_context_sids_windows():
 
         context_sids = {user_sid}
 
-        # 2. Resolve TokenLogonSid (28)
+        # 2. Resolve TokenLogonSid (28) using TOKEN_GROUPS structure
         cbNeeded = wintypes.DWORD()
-        GetTokenInformation(hToken, 28, None, 0, ctypes.byref(cbNeeded))
+        TokenLogonSid = 28
+        GetTokenInformation(hToken, TokenLogonSid, None, 0, ctypes.byref(cbNeeded))
         if cbNeeded.value > 0:
             buf_logon = (ctypes.c_char * cbNeeded.value)()
-            if GetTokenInformation(hToken, 28, buf_logon, cbNeeded.value, ctypes.byref(cbNeeded)):
-                logon_info = ctypes.cast(buf_logon, ctypes.POINTER(TOKEN_LOGON_SID)).contents
-                str_logon = wintypes.LPWSTR()
-                if ConvertSidToStringSidW(logon_info.LogonSid.Sid, ctypes.byref(str_logon)):
-                    context_sids.add(str_logon.value.upper())
-                    LocalFree(str_logon)
-
-        # 3. Resolve TokenCapabilities (19) if in AppContainer / restricted sandbox
-        cbNeeded = wintypes.DWORD()
-        GetTokenInformation(hToken, 19, None, 0, ctypes.byref(cbNeeded))
-        if cbNeeded.value > 0:
-            buf_caps = (ctypes.c_char * cbNeeded.value)()
-            if GetTokenInformation(hToken, 19, buf_caps, cbNeeded.value, ctypes.byref(cbNeeded)):
-                tg = ctypes.cast(buf_caps, ctypes.POINTER(TOKEN_GROUPS)).contents
-                if tg.GroupCount > 0:
-                    groups = ctypes.cast(ctypes.byref(tg.Groups), ctypes.POINTER(SID_AND_ATTRIBUTES * tg.GroupCount)).contents
+            if GetTokenInformation(hToken, TokenLogonSid, buf_logon, cbNeeded.value, ctypes.byref(cbNeeded)):
+                tg = ctypes.cast(buf_logon, ctypes.POINTER(TOKEN_GROUPS)).contents
+                if 0 < tg.GroupCount < 65536:
+                    class TG_DYN(ctypes.Structure):
+                        _fields_ = [("GroupCount", wintypes.DWORD), ("Groups", SID_AND_ATTRIBUTES * tg.GroupCount)]
+                    tg_dyn = ctypes.cast(buf_logon, ctypes.POINTER(TG_DYN)).contents
                     for i in range(tg.GroupCount):
-                        str_cap = wintypes.LPWSTR()
-                        if ConvertSidToStringSidW(groups[i].Sid, ctypes.byref(str_cap)):
-                            context_sids.add(str_cap.value.upper())
-                            LocalFree(str_cap)
+                        sid_ptr = tg_dyn.Groups[i].Sid
+                        if sid_ptr and advapi32.IsValidSid(ctypes.c_void_p(sid_ptr)):
+                            str_logon = wintypes.LPWSTR()
+                            if ConvertSidToStringSidW(ctypes.c_void_p(sid_ptr), ctypes.byref(str_logon)):
+                                context_sids.add(str_logon.value.upper())
+                                LocalFree(str_logon)
+
+        # Note: TokenCapabilities SIDs are deliberately excluded to ensure AppContainer
+        # shared capability SIDs cannot be trusted as private user credentials.
 
         return user_sid, context_sids
     finally:
         CloseHandle(hToken)
+
+
+def _parse_ace_record(pAce_val: int, advapi32, kernel32):
+    """
+    Parses an individual ACE from its pointer value pAce_val.
+    Inspects AceType, handles standard and object ACE layouts, validates bounds
+    and SID structures with IsValidSid, and extracts uppercase string SID.
+
+    Returns dict:
+      is_valid (bool): True if ACE is well-formed, False if malformed/truncated
+      ace_type (int): numeric ACE type
+      ace_flags (int): numeric ACE flags
+      ace_size (int): declared size of ACE
+      is_allow (bool): True if ACCESS_ALLOWED_ACE_TYPE or ACCESS_ALLOWED_OBJECT_ACE_TYPE
+      is_deny (bool): True if ACCESS_DENIED_ACE_TYPE or ACCESS_DENIED_OBJECT_ACE_TYPE
+      is_supported (bool): True if standard filesystem ACE (type 0x0 or 0x1)
+      is_object (bool): True if object ACE (type 0x5 or 0x6)
+      sid (Optional[str]): uppercase SID string if parseable and valid, else None
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    # ACE_HEADER is 4 bytes: AceType (BYTE), AceFlags (BYTE), AceSize (WORD)
+    ace_type = ctypes.c_uint8.from_address(pAce_val).value
+    ace_flags = ctypes.c_uint8.from_address(pAce_val + 1).value
+    ace_size = ctypes.c_uint16.from_address(pAce_val + 2).value
+
+    if ace_size < 4:
+        return {
+            "is_valid": False,
+            "ace_type": ace_type,
+            "ace_flags": ace_flags,
+            "ace_size": ace_size,
+            "is_allow": False,
+            "is_deny": False,
+            "is_supported": False,
+            "is_object": False,
+            "sid": None,
+        }
+
+    ACCESS_ALLOWED_ACE_TYPE = 0x0
+    ACCESS_DENIED_ACE_TYPE = 0x1
+    ACCESS_ALLOWED_OBJECT_ACE_TYPE = 0x5
+    ACCESS_DENIED_OBJECT_ACE_TYPE = 0x6
+
+    is_allow = ace_type in (ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE)
+    is_deny = ace_type in (ACCESS_DENIED_ACE_TYPE, ACCESS_DENIED_OBJECT_ACE_TYPE)
+    is_supported = ace_type in (ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE)
+    is_object = ace_type in (ACCESS_ALLOWED_OBJECT_ACE_TYPE, ACCESS_DENIED_OBJECT_ACE_TYPE)
+
+    sid_offset = None
+
+    if ace_type in (ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE):
+        # Header (4) + Mask (4) + SidStart (at offset 8)
+        sid_offset = 8
+    elif ace_type in (ACCESS_ALLOWED_OBJECT_ACE_TYPE, ACCESS_DENIED_OBJECT_ACE_TYPE):
+        # Header (4) + Mask (4) + Flags (4) = 12
+        if ace_size < 12:
+            return {
+                "is_valid": False,
+                "ace_type": ace_type,
+                "ace_flags": ace_flags,
+                "ace_size": ace_size,
+                "is_allow": is_allow,
+                "is_deny": is_deny,
+                "is_supported": False,
+                "is_object": True,
+                "sid": None,
+            }
+        flags = ctypes.c_uint32.from_address(pAce_val + 8).value
+        offset = 12
+        if flags & 0x01:  # ACE_OBJECT_TYPE_PRESENT
+            offset += 16  # sizeof(GUID)
+        if flags & 0x02:  # ACE_INHERITED_OBJECT_TYPE_PRESENT
+            offset += 16  # sizeof(GUID)
+        sid_offset = offset
+    else:
+        # Unsupported ACE type (Callback, Audit, Alarm, Mandatory label, Compound, etc.)
+        return {
+            "is_valid": True,
+            "ace_type": ace_type,
+            "ace_flags": ace_flags,
+            "ace_size": ace_size,
+            "is_allow": False,
+            "is_deny": False,
+            "is_supported": False,
+            "is_object": False,
+            "sid": None,
+        }
+
+    # Minimum valid SID is 8 bytes (Revision 1 + SubAuthorityCount 1 + IdentifierAuthority 6)
+    if sid_offset + 8 > ace_size:
+        return {
+            "is_valid": False,
+            "ace_type": ace_type,
+            "ace_flags": ace_flags,
+            "ace_size": ace_size,
+            "is_allow": is_allow,
+            "is_deny": is_deny,
+            "is_supported": is_supported,
+            "is_object": is_object,
+            "sid": None,
+        }
+
+    sid_ptr = ctypes.c_void_p(pAce_val + sid_offset)
+    if not advapi32.IsValidSid(sid_ptr):
+        return {
+            "is_valid": False,
+            "ace_type": ace_type,
+            "ace_flags": ace_flags,
+            "ace_size": ace_size,
+            "is_allow": is_allow,
+            "is_deny": is_deny,
+            "is_supported": is_supported,
+            "is_object": is_object,
+            "sid": None,
+        }
+
+    str_sid = wintypes.LPWSTR()
+    if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(str_sid)):
+        return {
+            "is_valid": False,
+            "ace_type": ace_type,
+            "ace_flags": ace_flags,
+            "ace_size": ace_size,
+            "is_allow": is_allow,
+            "is_deny": is_deny,
+            "is_supported": is_supported,
+            "is_object": is_object,
+            "sid": None,
+        }
+
+    sid_str = str_sid.value.upper()
+    kernel32.LocalFree(str_sid)
+
+    return {
+        "is_valid": True,
+        "ace_type": ace_type,
+        "ace_flags": ace_flags,
+        "ace_size": ace_size,
+        "is_allow": is_allow,
+        "is_deny": is_deny,
+        "is_supported": is_supported,
+        "is_object": is_object,
+        "sid": sid_str,
+    }
 
 
 def verify_windows_dacl(path: Path) -> bool:
@@ -169,13 +314,15 @@ def verify_windows_dacl(path: Path) -> bool:
     Verifies that on Windows, the DACL for path is strictly restricted:
     - Queries the DACL directly via Win32 GetNamedSecurityInfoW API.
     - Explicitly resolves the current process user SID using Windows Token APIs.
-    - Rejects any ACE that grants access to broad/shared groups:
-      Everyone (S-1-1-0), Users (S-1-5-32-545), Authenticated Users (S-1-5-11),
-      Guests (S-1-5-32-546), Anonymous (S-1-5-7), Network (S-1-5-2), Interactive (S-1-5-4), etc.
-    - Rejects any ACE whose SID belongs to another user account (must match current user SID).
+    - Inspects AceType and parses each ACE using its correct structure.
+    - Explicitly rejects unsupported or malformed ACE types (e.g. object ACEs, callback ACEs).
+    - Handles allow and deny ACEs deliberately:
+      - Deny ACEs denying the current user, SYSTEM, or Administrators cause verification to FAIL.
+      - Allow ACEs granting access to broad/shared groups (Everyone, Users, Guests, etc.) or
+        any unapproved user SID cause verification to FAIL.
     - Allows only: Current User SID, SYSTEM (S-1-5-18), Administrators (S-1-5-32-544),
-      Creator Owner (S-1-3-0), and verified logon/capability SIDs from current process token.
-    - Returns False if untrusted access is detected or if verification fails.
+      Creator Owner (S-1-3-0), and verified logon session SID of current process context.
+    - Fails closed if any ACE cannot be safely interpreted or if user SID cannot be resolved.
     """
     if os.name != "nt":
         return True
@@ -220,9 +367,13 @@ def verify_windows_dacl(path: Path) -> bool:
         ]
         GetNamedSecurityInfoW.restype = wintypes.DWORD
 
-        ConvertSidToStringSidW = advapi32.ConvertSidToStringSidW
-        ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
-        ConvertSidToStringSidW.restype = wintypes.BOOL
+        GetAclInformation = advapi32.GetAclInformation
+        GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.c_int]
+        GetAclInformation.restype = wintypes.BOOL
+
+        GetAce = advapi32.GetAce
+        GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+        GetAce.restype = wintypes.BOOL
 
         LocalFree = kernel32.LocalFree
         LocalFree.argtypes = [ctypes.c_void_p]
@@ -233,28 +384,6 @@ def verify_windows_dacl(path: Path) -> bool:
                 ("AclBytesInUse", wintypes.DWORD),
                 ("AclBytesFree", wintypes.DWORD),
             ]
-
-        class ACE_HEADER(ctypes.Structure):
-            _fields_ = [
-                ("AceType", wintypes.BYTE),
-                ("AceFlags", wintypes.BYTE),
-                ("AceSize", wintypes.WORD),
-            ]
-
-        class ACCESS_ALLOWED_ACE(ctypes.Structure):
-            _fields_ = [
-                ("Header", ACE_HEADER),
-                ("Mask", wintypes.DWORD),
-                ("SidStart", wintypes.DWORD),
-            ]
-
-        GetAclInformation = advapi32.GetAclInformation
-        GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.c_int]
-        GetAclInformation.restype = wintypes.BOOL
-
-        GetAce = advapi32.GetAce
-        GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
-        GetAce.restype = wintypes.BOOL
 
         pDacl = ctypes.c_void_p()
         pSD = ctypes.c_void_p()
@@ -286,35 +415,49 @@ def verify_windows_dacl(path: Path) -> bool:
                 if not GetAce(pDacl, i, ctypes.byref(pAce)):
                     return False
 
-                ace_header = ctypes.cast(pAce, ctypes.POINTER(ACE_HEADER)).contents
-                sid_ptr = pAce.value + ACCESS_ALLOWED_ACE.SidStart.offset
-                str_sid = wintypes.LPWSTR()
-                if not ConvertSidToStringSidW(ctypes.c_void_p(sid_ptr), ctypes.byref(str_sid)):
+                ace = _parse_ace_record(pAce.value, advapi32, kernel32)
+                # 1. Reject malformed ACEs
+                if not ace["is_valid"]:
                     return False
 
-                ace_sid = str_sid.value.upper()
-                LocalFree(str_sid)
-
-                # 1. Reject if SID is in forbidden broad groups
-                if ace_sid in forbidden_sids:
+                # 2. Reject unsupported ACE types (e.g. object ACEs, callback ACEs, audit ACEs)
+                if not ace["is_supported"]:
                     return False
 
-                # 2. Check if SID is an allowed system principal
-                if ace_sid in allowed_system_sids:
-                    has_user_or_system = True
+                ace_sid = ace["sid"]
+                if not ace_sid:
+                    return False
+
+                # 3. Handle Deny ACEs deliberately
+                if ace["is_deny"]:
+                    # Denying access to current user, SYSTEM, or Administrators invalidates security
+                    if ace_sid == user_sid or ace_sid in allowed_system_sids or ace_sid in context_sids:
+                        return False
+                    # Denying an unauthorized/forbidden entity does not grant access
                     continue
 
-                # 3. Check if SID matches the current user's EXACT SID
-                if ace_sid == user_sid:
-                    has_user_or_system = True
-                    continue
+                # 4. Handle Allow ACEs
+                if ace["is_allow"]:
+                    # Reject broad/shared groups
+                    if ace_sid in forbidden_sids:
+                        return False
 
-                # 4. Check if SID is an exact verified logon session or capability SID of this security context
-                if ace_sid in context_sids:
-                    continue
+                    # Check allowed system principals
+                    if ace_sid in allowed_system_sids:
+                        has_user_or_system = True
+                        continue
 
-                # Any other user SID (including any other local/domain user account!) is REJECTED
-                return False
+                    # Check exact current user SID
+                    if ace_sid == user_sid:
+                        has_user_or_system = True
+                        continue
+
+                    # Check exact current logon session SID
+                    if ace_sid in context_sids:
+                        continue
+
+                    # Any other user SID (including any other local/domain account) is REJECTED
+                    return False
 
             return has_user_or_system
         finally:
@@ -327,19 +470,20 @@ def verify_windows_dacl(path: Path) -> bool:
 def enforce_windows_dacl(path: Path, is_dir: bool = False) -> bool:
     """
     On Windows, applies restrictive DACL to path:
-    - Disables inheritance and strips broad permissions (/inheritance:r)
-    - Discovers all existing ACE SIDs in the DACL via Win32 security APIs and removes
-      any unapproved SID (/remove *<SID>)
-    - Grants Full Control strictly to current user SID (*<user_sid>), SYSTEM (*S-1-5-18),
-      and Administrators (*S-1-5-32-544)
+    - Fails closed immediately if current user SID cannot be resolved (no username fallback).
+    - Atomically replaces the DACL with a protected DACL via Win32 SetNamedSecurityInfoW API,
+      disabling inheritance (PROTECTED_DACL_SECURITY_INFORMATION) and granting Full Control
+      strictly to current user SID (*<user_sid>), SYSTEM (*S-1-5-18), and Administrators (*S-1-5-32-544).
+    - Strips broad groups (Everyone, Users, Guests, etc.) as defense-in-depth.
+    - Verifies DACL with verify_windows_dacl before returning success.
     """
     if os.name != "nt":
         return True
-    user_sid, _ = _get_current_user_and_context_sids_windows()
-    user_target = f"*{user_sid}" if user_sid else (os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser())
-    if not user_target:
-        return False
-    perm = "(OI)(CI)F" if is_dir else "F"
+
+    user_sid, context_sids = _get_current_user_and_context_sids_windows()
+    if not user_sid:
+        return False  # Fail closed: never fall back to username string
+
     try:
         import ctypes
         from ctypes import wintypes
@@ -347,45 +491,61 @@ def enforce_windows_dacl(path: Path, is_dir: bool = False) -> bool:
         advapi32 = ctypes.windll.advapi32
         kernel32 = ctypes.windll.kernel32
 
-        # 1. Strip inherited permissions
-        subprocess.run(["icacls", str(path), "/inheritance:r"], capture_output=True, timeout=10)
+        InitializeAcl = advapi32.InitializeAcl
+        InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+        InitializeAcl.restype = wintypes.BOOL
 
-        # 2. Query DACL and find any unapproved SIDs
-        pDacl = ctypes.c_void_p()
-        pSD = ctypes.c_void_p()
+        AddAccessAllowedAceEx = advapi32.AddAccessAllowedAceEx
+        AddAccessAllowedAceEx.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+        AddAccessAllowedAceEx.restype = wintypes.BOOL
+
+        ConvertStringSidToSidW = advapi32.ConvertStringSidToSidW
+        ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+        ConvertStringSidToSidW.restype = wintypes.BOOL
+
+        SetNamedSecurityInfoW = advapi32.SetNamedSecurityInfoW
+        SetNamedSecurityInfoW.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+        ]
+        SetNamedSecurityInfoW.restype = wintypes.DWORD
+
+        LocalFree = kernel32.LocalFree
+        LocalFree.argtypes = [ctypes.c_void_p]
+
+        # 1. Build pristine protected DACL in memory
+        acl_buf = (ctypes.c_byte * 1024)()
+        ACL_REVISION = 2
+        if not InitializeAcl(acl_buf, 1024, ACL_REVISION):
+            return False
+
+        FILE_ALL_ACCESS = 0x1F01FF
+        # For directory: OBJECT_INHERIT_ACE (0x01) | CONTAINER_INHERIT_ACE (0x02)
+        ace_flags = 0x03 if is_dir else 0x00
+
+        for s in [user_sid, "S-1-5-18", "S-1-5-32-544"]:
+            ps = ctypes.c_void_p()
+            if not ConvertStringSidToSidW(s, ctypes.byref(ps)):
+                return False
+            ok = AddAccessAllowedAceEx(acl_buf, ACL_REVISION, ace_flags, FILE_ALL_ACCESS, ps)
+            LocalFree(ps)
+            if not ok:
+                return False
+
         SE_FILE_OBJECT = 1
         DACL_SECURITY_INFORMATION = 0x00000004
-        res = advapi32.GetNamedSecurityInfoW(
-            str(path), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-            None, None, ctypes.byref(pDacl), None, ctypes.byref(pSD)
+        PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+
+        # Atomically apply the protected DACL (strips inherited and non-matching ACEs)
+        ret = SetNamedSecurityInfoW(
+            str(path), SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            None, None, acl_buf, None
         )
-        if res == 0 and pDacl.value:
-            class ACL_SIZE_INFORMATION(ctypes.Structure):
-                _fields_ = [("AceCount", wintypes.DWORD), ("AclBytesInUse", wintypes.DWORD), ("AclBytesFree", wintypes.DWORD)]
-            class ACCESS_ALLOWED_ACE(ctypes.Structure):
-                _fields_ = [("Header", ctypes.c_byte * 4), ("Mask", wintypes.DWORD), ("SidStart", wintypes.DWORD)]
+        if ret != 0:
+            return False
 
-            size_info = ACL_SIZE_INFORMATION()
-            if advapi32.GetAclInformation(pDacl, ctypes.byref(size_info), ctypes.sizeof(size_info), 2):
-                unapproved_sids = set()
-                allowed_sids = {user_sid, "S-1-5-18", "S-1-5-32-544", "S-1-3-0"}
-                for i in range(size_info.AceCount):
-                    pAce = ctypes.c_void_p()
-                    if advapi32.GetAce(pDacl, i, ctypes.byref(pAce)):
-                        sid_ptr = pAce.value + ACCESS_ALLOWED_ACE.SidStart.offset
-                        str_sid = wintypes.LPWSTR()
-                        if advapi32.ConvertSidToStringSidW(ctypes.c_void_p(sid_ptr), ctypes.byref(str_sid)):
-                            s_val = str_sid.value.upper()
-                            kernel32.LocalFree(str_sid)
-                            if s_val not in allowed_sids:
-                                unapproved_sids.add(s_val)
-                for u in unapproved_sids:
-                    subprocess.run(["icacls", str(path), "/remove", f"*{u}"], capture_output=True, timeout=10)
-
-            if pSD.value:
-                kernel32.LocalFree(pSD)
-
-        # 3. Explicitly remove well-known broad groups by name and SID as extra defense
+        # 2. Defense-in-depth: explicitly remove well-known broad groups by name and SID
         subprocess.run(
             [
                 "icacls",
@@ -411,19 +571,8 @@ def enforce_windows_dacl(path: Path, is_dir: bool = False) -> bool:
             timeout=10,
         )
 
-        # 4. Grant Full Control strictly to current user's exact SID, SYSTEM, Administrators
-        cmd_grant = [
-            "icacls",
-            str(path),
-            "/grant:r",
-            f"{user_target}:{perm}",
-            "/grant:r",
-            f"*S-1-5-18:{perm}",
-            "/grant:r",
-            f"*S-1-5-32-544:{perm}",
-        ]
-        res = subprocess.run(cmd_grant, capture_output=True, text=True, timeout=10)
-        return res.returncode == 0
+        # 3. Verify the resulting DACL
+        return verify_windows_dacl(path)
     except Exception:
         return False
 

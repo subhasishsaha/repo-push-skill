@@ -320,21 +320,40 @@ class TestIsolation(unittest.TestCase):
                 os.chmod = orig_chmod
 
     def test_windows_dacl_enforcement(self):
-        """Windows DACL verification must reject broad principals (Everyone, Users), arbitrary user SIDs, and accept restricted DACL."""
+        """Windows DACL verification must reject broad principals (Everyone, Users), arbitrary user SIDs, object ACEs, unsupported ACEs, deny ACEs on user, and accept restricted DACL."""
         if os.name != "nt":
             self.skipTest("Windows DACL enforcement test only runs on Windows (nt)")
 
         import importlib.util
         import subprocess
+        import ctypes
+        import struct
+        from ctypes import wintypes
+
         spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
         iso_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(iso_mod)
 
-        # Verify current user SID resolution
+        # 1. Verify current process user SID resolution and TokenLogonSid parsing
         user_sid, context_sids = iso_mod._get_current_user_and_context_sids_windows()
-        self.assertIsNotNone(user_sid)
-        self.assertTrue(user_sid.startswith("S-1-"))
+        self.assertIsNotNone(user_sid, "Current process user SID must be resolved")
+        self.assertTrue(user_sid.startswith("S-1-"), f"Unexpected user SID format: {user_sid}")
         self.assertIn(user_sid, context_sids)
+
+        # Ensure logon session SID is parsed correctly via TOKEN_GROUPS (starts with S-1-5-5-) and NOT bogus S-1-0
+        self.assertNotIn("S-1-0", context_sids, "Logon SID must not be read as bogus NULL SID (S-1-0)")
+
+        # Unit test _parse_ace_record with unsupported and malformed ACE layouts
+        advapi32 = ctypes.windll.advapi32
+        kernel32 = ctypes.windll.kernel32
+        dummy_unsupported_ace = struct.pack("<BBHIQ", 0x14, 0x00, 16, 0x1200A9, 0)
+        rec_unsupported = iso_mod._parse_ace_record(ctypes.cast(dummy_unsupported_ace, ctypes.c_void_p).value, advapi32, kernel32)
+        self.assertTrue(rec_unsupported["is_valid"])
+        self.assertFalse(rec_unsupported["is_supported"], "ACE type 0x14 must be flagged as unsupported")
+        self.assertIsNone(rec_unsupported["sid"])
+
+        rec_malformed = iso_mod._parse_ace_record(ctypes.cast(struct.pack("<BBH", 0x00, 0x00, 2), ctypes.c_void_p).value, advapi32, kernel32)
+        self.assertFalse(rec_malformed["is_valid"], "ACE with size < 4 must be flagged as invalid")
 
         with tempfile.TemporaryDirectory() as td:
             test_dir = Path(td) / "sec_keys"
@@ -343,28 +362,66 @@ class TestIsolation(unittest.TestCase):
             test_file.write_bytes(b"A" * 32)
 
             try:
-                # 1. Enforce strict DACL on directory and file
+                # 2. Enforce strict DACL on directory and file
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_dir, is_dir=True))
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
                 self.assertTrue(iso_mod.verify_windows_dacl(test_dir))
                 self.assertTrue(iso_mod.verify_windows_dacl(test_file))
 
-                # 2. Grant Everyone:(R) to test file - must be rejected by verify_windows_dacl
-                res = subprocess.run(["icacls", str(test_file), "/grant", "Everyone:(R)"], capture_output=True, text=True)
-                if res.returncode == 0:
-                    self.assertFalse(iso_mod.verify_windows_dacl(test_file))
+                # 3. Grant Everyone by SID (*S-1-1-0) - ensure grant is applied, then assert rejection
+                res = subprocess.run(["icacls", str(test_file), "/grant", "*S-1-1-0:(R)"], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, f"Failed to apply Everyone ACE via icacls: {res.stderr}")
+                self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject file with Everyone ACE")
 
-                # 3. Grant Users:(R) to test directory - must be rejected by verify_windows_dacl
-                res = subprocess.run(["icacls", str(test_dir), "/grant", "Users:(R)"], capture_output=True, text=True)
-                if res.returncode == 0:
-                    self.assertFalse(iso_mod.verify_windows_dacl(test_dir))
+                # 4. Grant Users by SID (*S-1-5-32-545) - ensure grant is applied, then assert rejection
+                res = subprocess.run(["icacls", str(test_dir), "/grant", "*S-1-5-32-545:(OI)(CI)(R)"], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, f"Failed to apply Users ACE via icacls: {res.stderr}")
+                self.assertFalse(iso_mod.verify_windows_dacl(test_dir), "verify_windows_dacl must reject directory with Users ACE")
 
-                # 4. Granting another user-specific SID (e.g. docker-users with S-1-5-21-... SID) must be rejected
-                res = subprocess.run(["icacls", str(test_file), "/grant", "docker-users:(R)"], capture_output=True, text=True)
-                if res.returncode == 0:
-                    self.assertFalse(iso_mod.verify_windows_dacl(test_file))
+                # 5. Grant an arbitrary unapproved user SID (S-1-5-21-99999-99999-99999-1001) without relying on optional groups
+                advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+                advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+                advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+                advapi32.GetLengthSid.restype = wintypes.DWORD
+                advapi32.InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+                advapi32.InitializeAcl.restype = wintypes.BOOL
+                advapi32.AddAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+                advapi32.AddAce.restype = wintypes.BOOL
+                advapi32.SetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+                advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
 
-                # 5. Re-enforcing strict DACL must restore verified status
+                pSid = ctypes.c_void_p()
+                self.assertTrue(advapi32.ConvertStringSidToSidW("S-1-5-21-99999-99999-99999-1001", ctypes.byref(pSid)))
+                sid_len = advapi32.GetLengthSid(pSid)
+                sid_bytes = bytes((ctypes.c_byte * sid_len).from_address(pSid.value))
+                ace_size = 8 + sid_len
+                ace_data = struct.pack("<BBHI", 0x00, 0x00, ace_size, 0x1200A9) + sid_bytes
+                acl_buf = (ctypes.c_byte * 1024)()
+                self.assertTrue(advapi32.InitializeAcl(acl_buf, 1024, 2))
+                self.assertTrue(advapi32.AddAce(acl_buf, 2, 0, ace_data, len(ace_data)))
+                ret = advapi32.SetNamedSecurityInfoW(str(test_file), 1, 4, None, None, acl_buf, None)
+                self.assertEqual(ret, 0, "Failed to apply arbitrary user SID DACL via SetNamedSecurityInfoW")
+                self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject arbitrary unapproved user SID")
+
+                # 6. Object ACE (ACCESS_ALLOWED_OBJECT_ACE_TYPE 0x05) must be rejected
+                guid = bytes(16)
+                ace_size = 4 + 4 + 4 + 16 + sid_len
+                ace_obj = struct.pack("<BBHII", 0x05, 0x00, ace_size, 0x1200A9, 0x01) + guid + sid_bytes
+                acl_buf = (ctypes.c_byte * 1024)()
+                self.assertTrue(advapi32.InitializeAcl(acl_buf, 1024, 4))
+                self.assertTrue(advapi32.AddAce(acl_buf, 4, 0, ace_obj, len(ace_obj)))
+                ret = advapi32.SetNamedSecurityInfoW(str(test_file), 1, 4, None, None, acl_buf, None)
+                self.assertEqual(ret, 0, "Failed to apply Object ACE DACL via SetNamedSecurityInfoW")
+                self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject Object ACE as unsupported on key storage")
+
+                # 7. Deny ACE on current user must be handled deliberately and cause verification failure
+                self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
+                self.assertTrue(iso_mod.verify_windows_dacl(test_file))
+                res = subprocess.run(["icacls", str(test_file), "/deny", f"*{user_sid}:(R)"], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, f"Failed to apply Deny ACE on user via icacls: {res.stderr}")
+                self.assertFalse(iso_mod.verify_windows_dacl(test_file), "verify_windows_dacl must reject file where user is denied access")
+
+                # 8. Re-enforcing strict DACL must completely restore verified status
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_dir, is_dir=True))
                 self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
                 self.assertTrue(iso_mod.verify_windows_dacl(test_dir))
