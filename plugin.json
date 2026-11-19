@@ -6,6 +6,12 @@
   "author": {
     "name": "Antigravity Agent Community"
   },
+  "repository": "https://github.com/subhasishsaha/repo-push-skill",
+  "suggestedPrompts": [
+    "Run an adversarial readiness audit on this codebase before publishing",
+    "Generate .repo-push/config.yaml for remote repository publishing",
+    "Publish this repository to remote git hosting using clean-snapshot mode"
+  ],
   "license": "Apache-2.0",
   "keywords": [
     "github",
