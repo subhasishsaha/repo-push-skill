@@ -125,7 +125,7 @@ actions:
 - **Two Distinct Publishing Modes:**
   - `history_preserving` (default): Publishes a new release commit with exclusions applied, while retaining full prior commit ancestry.
   - `clean_snapshot`: Publishes a single orphan commit with zero prior ancestry. Forbids `--tags` upfront to prevent leaking excluded files or history through existing Git tags.
-- **Cross-Platform Dual-OS CI Matrix:** Continuously validated across Linux (`ubuntu-latest`) and Windows (`windows-latest`) on Python 3.10, 3.11, and 3.12, actively exercising Win32 Security APIs, DACL enforcement, token layout parsing, and isolated git publishing on real Windows runners.
+- **Cross-Platform Dual-OS CI Matrix:** Continuously validated across Linux (`ubuntu-latest`) and Windows (`windows-latest`) on Python 3.10, 3.11, and 3.12, actively exercising file permissions, tamper detection, and isolated git publishing on real Windows and Linux runners.
 
 ---
 
@@ -134,20 +134,12 @@ actions:
 To prevent subagents from overstepping their scope—such as a prompt-injected **`remediator` modifying `auditor`'s report** instead of fixing application code—`repo-push` enforces a **3-Layer Defense-in-Depth Model**:
 
 1. **Layer 1 (Prompt Contracts & Untrusted Data Defense):** Explicit in-memory scope boundaries and permission contracts injected into each subagent's system prompt (with zero `.audit/.agents/` disk clutter). All repository files are treated as untrusted data to defend against prompt injection.
-2. **Layer 2 (OS Read-Only Permission Barrier):** `.audit/reports/` and `.audit/.trusted/` are marked read-only using filesystem attributes (`attrib +r` on Windows, `chmod -R 555` on Unix) prior to dispatching `remediator`.
-3. **Layer 3 (HMAC Tamper Detection & Verified Rollback):** A cryptographic manifest authenticated via HMAC-SHA256 is recorded prior to remediation. The ephemeral 256-bit session secret key is stored outside the repository in verified private per-user directories:
-   - **POSIX Mode & Ownership Verification:** Strict `0700` directory permissions, ownership validation (`st_uid == os.getuid()`), and `0600` file modes verified via `lstat` to reject symlinks, unowned files, and permissive modes (`st_mode & 0o077 == 0`).
-   - **Windows Native Security API DACL Enforcement:**
-     - **Direct Win32 Security API Parsing:** Inspects binary security descriptors directly via `advapi32` APIs (`GetNamedSecurityInfoW`, `GetAclInformation`, `GetAce`, `ConvertSidToStringSidW`). This eliminates reliance on localized or fragile command-line text output from `icacls`.
-     - **ACE Type Inspection & Strict SID Length Bounds:** Reads and inspects `AceType` before interpreting each ACE. Correctly parses standard allow/deny ACEs (`ACCESS_ALLOWED_ACE_TYPE`, `ACCESS_DENIED_ACE_TYPE`) and object ACEs (`ACCESS_ALLOWED_OBJECT_ACE_TYPE`, `ACCESS_DENIED_OBJECT_ACE_TYPE` based on `Flags` and GUID presence). Bounds the full variable-length SID body via `advapi32.GetLengthSid` to guarantee that `sid_offset + sid_length <= ace_size` before conversion, rejecting truncated or malformed ACEs. Explicitly rejects unsupported or malformed ACE types (e.g. object ACEs, callback ACEs, compound ACEs) on private HMAC key files.
-     - **Outright Rejection of Deny ACEs (Allow-Only Model):** The security specification establishes an allow-only DACL model. The verifier rejects any Deny ACE outright (including broad-principal denies like `Everyone`), preventing deny ACEs from preceding and overriding authorized user permissions or altering DACL access semantics.
-     - **Exact Process Token Identity & Correct TokenLogonSid Layout:** Resolves the current user's exact Security Identifier (SID) via `OpenProcessToken` (`TokenUser`). Correctly parses `TokenLogonSid` as a `TOKEN_GROUPS` structure (validating `GroupCount` and array of `SID_AND_ATTRIBUTES`), eliminating memory alignment corruption and derivation of bogus SIDs.
-     - **Fail-Closed User Identity Resolution:** Requires successful resolution of the current process token's user SID; stops enforcement and fails closed with zero fallback to username strings.
-     - **Zero Arbitrary Account Trust & Capability SID Rejection:** Rejects any trustee SID that does not match the exact current user SID, Local System (`S-1-5-18`), Administrators (`S-1-5-32-544`), or Creator Owner (`S-1-3-0`). Arbitrary user or group accounts sharing the `S-1-5-21-...` prefix are strictly rejected. SIDs from `TokenCapabilities` are deliberately excluded and rejected to prevent AppContainer multi-application capability sharing from compromising key secrecy.
-     - **Atomic Protected DACL Replacement:** Atomically applies a protected DACL via `SetNamedSecurityInfoW` with `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`, disabling inheritance and granting Full Control strictly to the verified user SID, SYSTEM, and Administrators. Defense-in-depth commands strip broad groups (`Everyone`, `BUILTIN\Users`, `Authenticated Users`, `Guests`).
-   - **Deterministic Persistence & Atomic Publication:** Keys are managed across deterministic candidate paths (primary path and stable `.fallback_keys/` directory) with atomic non-overwriting publication (`O_CREAT | O_EXCL`) and binary file mode (`os.O_BINARY`) to prevent line-ending corruption.
-   - **Fail-Closed Corrupted Key Handling:** Any regular user-owned key file whose size is not exactly 32 bytes—including empty 0-byte files—is treated as corrupted and raises `RuntimeError` immediately rather than silently falling back to inconsistent keys.
-   - **Tamper Detection & Verified Rollback:** If report tampering or unauthorized modifications are detected, the turn fails closed (`exit code 1`). Before restoring reports, the local backup directory is independently verified against the authenticated manifest.
+2. **Layer 2 (Workspace Permission Lock):** Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting temporary read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) strictly across the workspace's `.audit/reports/` and `.audit/.trusted/` directories. No files, permissions, or system services outside the repository are modified.
+3. **Layer 3 (Cryptographic HMAC Tamper Detection & Verified Rollback):** A cryptographic snapshot authenticated via HMAC-SHA256 and a local backup of `.audit/reports/` is stored in `.audit/.trusted/`. An ephemeral 256-bit session key is stored within `.audit/.trusted/` with standard private file permissions (mode `0600` on POSIX, current user access on Windows) so only the user process can read it:
+   - **Deterministic Persistence & Verification:** Keys are managed with atomic non-overwriting publication (`O_CREAT | O_EXCL`) and binary file mode (`os.O_BINARY`) to prevent line-ending corruption.
+   - **Fail-Closed Corrupted Key Handling:** Any key file whose size is not exactly 32 bytes—including empty 0-byte files—is treated as corrupted and raises `RuntimeError` immediately.
+   - **Tamper Detection & Verified Rollback:** If report tampering or unauthorized modifications are detected when `remediator` completes, the turn fails closed (`exit code 1`). Reports are independently verified against the HMAC manifest before rollback from the trusted backup, and a security violation is recorded in the audit log.
+   Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
 
 > [!NOTE]
 > **Operational Boundary:** Within an agent execution environment sharing the same OS user account and filesystem, filesystem permission attributes and HMAC signatures provide tamper-detection and guardrails against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account.
@@ -219,8 +211,8 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │   ├── repo-push.schema.json                  # Schema for config.yaml
 │   └── repo-push-actions.schema.json          # Schema for actions.yaml
 │
-├── tests/                                     # Automated test suite (46 unit & integration tests across 6 modules)
-│   ├── test_isolation.py                      # Fail-closed behavioral isolation, Windows DACL, & HMAC tests
+├── tests/                                     # Automated test suite (47 unit & integration tests across 6 modules)
+│   ├── test_isolation.py                      # Fail-closed behavioral isolation, permission locking, & HMAC tests
 │   ├── test_config_validator.py               # Schema, duplicate target, and path traversal tests
 │   ├── test_config_generator.py               # Deterministic config generator tests
 │   ├── test_schema_validation.py              # JSON Schema syntax tests
@@ -234,7 +226,7 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │       ├── scripts/                           # Production-grade verification & publishing tooling
 │       │   ├── generate_config.py             # Deterministic remote & platform discovery
 │       │   ├── validate_config.py             # PyYAML & JSON Schema validator & cross-referencer
-│       │   ├── enforce_isolation.py           # Fail-closed OS locking, Windows DACL enforcement, HMAC authentication & rollback
+│       │   ├── enforce_isolation.py           # Fail-closed workspace locking, HMAC authentication & rollback
 │       │   ├── git_publisher.py               # Isolated Git worktree publisher with persistent kernel-level OS file locking
 │       │   └── audit_runner.py                # 6-Gate canonical evidence-based verification engine
 │       │

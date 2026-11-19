@@ -32,19 +32,17 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 
 1. **Layer 1: In-Memory Prompt Contracts:**  
    The Orchestrator defines explicit role boundaries and forbidden scopes in each subagent's system prompt (with zero `.audit/.agents/` disk clutter). Subagents are instructed to treat all repository files as untrusted input to defend against prompt injection.
-2. **Layer 2: OS Read-Only Permission Barrier:**  
-   Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting filesystem read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) across both `.audit/reports/` and `.audit/.trusted/`.
-3. **Layer 3: HMAC Tamper Detection & Verified Rollback:**  
-   A cryptographic snapshot authenticated via HMAC-SHA256 and a local backup of `.audit/reports/` is stored in `.audit/.trusted/`. The ephemeral 256-bit session secret key is stored outside the repository in verified private per-user directories:
-   - **POSIX:** Strict `0700` directory permissions, user ownership validation (`st_uid == os.getuid()`), and `0600` file modes verified via `lstat` to reject symlinks, unowned files, and permissive modes.
-   - **Windows:** Native Win32 Security API DACL validation (`GetNamedSecurityInfoW`, `GetAclInformation`, `GetAce`, `ConvertSidToStringSidW`). Inspects `AceType` to correctly parse standard and object ACE layouts, bounds variable-length SID body via `GetLengthSid`, rejects any Deny ACE outright (allow-only DACL model), and explicitly rejects unsupported or malformed ACE types on key storage. Queries token security context via `OpenProcessToken` (`TokenUser`, `TokenLogonSid` via `TOKEN_GROUPS`) to resolve the exact current user SID and fails closed if unresolvable. Atomically replaces DACL via `SetNamedSecurityInfoW` with `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`, stripping inheritance and restricting access strictly to the current user's exact SID, Local System (`S-1-5-18`), and Administrators (`S-1-5-32-544`). Explicitly rejects arbitrary other user/group SIDs (including non-matching `S-1-5-21-...` accounts) and capability SIDs.
+2. **Layer 2: Workspace Permission Lock:**  
+   Before dispatching `remediator`, the Orchestrator executes `python <skill>/scripts/enforce_isolation.py lock`, setting temporary read-only permissions (`attrib +r` on Windows, `chmod -R 555` on Unix) strictly across the workspace's `.audit/reports/` and `.audit/.trusted/` directories. No files, permissions, or services outside the repository are modified.
+3. **Layer 3: Cryptographic HMAC Tamper Detection & Verified Rollback:**  
+   A cryptographic snapshot authenticated via HMAC-SHA256 and a local backup of `.audit/reports/` is stored in `.audit/.trusted/`. An ephemeral 256-bit session key is stored within `.audit/.trusted/` with standard private file permissions (mode `0600` on POSIX, current user access on Windows) so only the user process can read it:
    - **Integrity Guarantee:** Any key length != 32 bytes (including 0-byte files) fails closed. If any unauthorized file creation, modification, deletion, size change, symlink tampering, or HMAC signature mismatch is detected when `remediator` completes:
      - The subagent turn is **immediately rejected (fail-closed)**.
      - Reports are independently verified against the HMAC manifest before rollback from the trusted backup.
      - A security violation is recorded in the audit log.
    Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
 
-> **Honesty & Boundary Notice**: Filesystem permission attributes (`attrib` / `chmod`) and HMAC signatures provide defense-in-depth against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account. Genuine adversarial isolation requires OS-level containerization.
+> **Honesty & Boundary Notice**: Workspace permission attributes (`attrib` / `chmod`) and HMAC signatures provide defense-in-depth against accidental modifications, model drift, and unprivileged overwrites. They do not constitute an impenetrable security boundary against malicious code execution running under the same user account. Genuine adversarial isolation requires OS-level containerization. No system services, elevated privileges, or external system files are ever modified.
 
 ---
 

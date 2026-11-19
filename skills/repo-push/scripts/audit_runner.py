@@ -90,6 +90,36 @@ def sha256_digest(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def get_sanitized_env() -> dict[str, str]:
+    """Return a sanitized copy of os.environ with sensitive variables stripped.
+
+    Ensures that host credentials, API keys, access tokens, and private secrets
+    are never leaked to git or validator subprocesses during auditing.
+    """
+    sensitive_substrings = (
+        "TOKEN", "KEY", "SECRET", "AUTH", "PASS", "CREDENTIAL",
+        "API", "BEARER", "PASSWORD", "PRIVATE", "SSH_AUTH", "AWS_"
+    )
+    preserved_system_vars = {
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+        "HOME", "USERPROFILE", "HOMEPATH", "HOMEDRIVE", "LOGNAME", "USER",
+        "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "TERM", "PYTHONPATH", "PYTHONHOME"
+    }
+    sanitized = {}
+    for k, v in os.environ.items():
+        k_upper = k.upper()
+        if k_upper in preserved_system_vars:
+            sanitized[k] = v
+        elif any(s in k_upper for s in sensitive_substrings):
+            # Explicitly strip sensitive environment variables
+            continue
+        else:
+            sanitized[k] = v
+    # Non-interactive Git safety
+    sanitized["GIT_TERMINAL_PROMPT"] = "0"
+    return sanitized
+
+
 class StubVisitor(ast.NodeVisitor):
     def __init__(self, rel_path: str, add_finding_fn):
         self.rel_path = rel_path
@@ -191,6 +221,7 @@ class StubVisitor(ast.NodeVisitor):
 class AuditRunner:
     def __init__(self, repo_root: Path):
         self.repo_root = repo_root.resolve()
+        self.sanitized_env = get_sanitized_env()
         self.evidence = {
             "version": "2.0.0",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -232,7 +263,7 @@ class AuditRunner:
     def get_tracked_files(self):
         if (self.repo_root / ".git").exists():
             try:
-                out = subprocess.check_output(["git", "ls-files"], cwd=self.repo_root, text=True)
+                out = subprocess.check_output(["git", "ls-files"], cwd=self.repo_root, text=True, env=self.sanitized_env)
                 return [self.repo_root / line.strip() for line in out.splitlines() if line.strip()]
             except Exception:
                 pass
@@ -250,7 +281,7 @@ class AuditRunner:
         if (self.repo_root / ".git").exists():
             try:
                 # Tracked files
-                out_tracked = subprocess.check_output(["git", "ls-files"], cwd=self.repo_root, text=True)
+                out_tracked = subprocess.check_output(["git", "ls-files"], cwd=self.repo_root, text=True, env=self.sanitized_env)
                 for line in out_tracked.splitlines():
                     if line.strip():
                         files.append(self.repo_root / line.strip())
@@ -259,7 +290,8 @@ class AuditRunner:
                 out_untracked = subprocess.check_output(
                     ["git", "ls-files", "--others", "--exclude-standard"],
                     cwd=self.repo_root,
-                    text=True
+                    text=True,
+                    env=self.sanitized_env
                 )
                 for line in out_untracked.splitlines():
                     if line.strip():
@@ -290,7 +322,8 @@ class AuditRunner:
             status_out = subprocess.check_output(
                 ["git", "status", "--porcelain"],
                 cwd=self.repo_root,
-                text=True
+                text=True,
+                env=self.sanitized_env
             ).strip()
             
             untracked = [line[2:].strip() for line in status_out.splitlines() if line.startswith("??")]
@@ -618,7 +651,8 @@ class AuditRunner:
                     ["git", "log", "--all", "-p", "--", "."],
                     cwd=self.repo_root,
                     text=True,
-                    errors="replace"
+                    errors="replace",
+                    env=self.sanitized_env
                 )
                 history_scanned = True
                 for line in log_out.splitlines():
@@ -670,7 +704,8 @@ class AuditRunner:
             [sys.executable, str(validator_script)],
             cwd=self.repo_root,
             capture_output=True,
-            text=True
+            text=True,
+            env=self.sanitized_env
         )
         duration = int((time.time() - start) * 1000)
 

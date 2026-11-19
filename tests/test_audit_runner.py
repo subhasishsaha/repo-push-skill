@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "skills" / "repo-push" / "scripts" / "audit_runner.py"
@@ -23,6 +24,7 @@ sys.modules["audit_runner"] = audit_runner_mod
 spec.loader.exec_module(audit_runner_mod)
 
 AuditRunner = audit_runner_mod.AuditRunner
+get_sanitized_env = audit_runner_mod.get_sanitized_env
 mask_token = audit_runner_mod.mask_token
 sha256_digest = audit_runner_mod.sha256_digest
 
@@ -192,6 +194,28 @@ def calculate_tax():
             self.assertIn(gate["status"], ("FAIL", "NOT_VERIFIED"))
             blockers = [f for f in runner.evidence["findings"] if f["severity"] == "BLOCKER"]
             self.assertGreaterEqual(len(blockers), 1)
+
+    def test_sanitized_env_strips_sensitive_variables(self):
+        """Audit subprocess environment must strip tokens, keys, and secrets."""
+        test_env = {
+            "PATH": "/usr/bin:/bin",
+            "USER": "developer",
+            "GITHUB_TOKEN": "ghp_" + ("x" * 36),
+            "OPENAI_API_KEY": "sk-" + ("y" * 32),
+            "AWS_SECRET_ACCESS_KEY": "secret_key_value",
+            "DATABASE_PASSWORD": "supersecretpassword",
+            "CUSTOM_API_SECRET": "custom_secret",
+            "SAFE_VAR": "safe_value"
+        }
+        with mock.patch.dict("os.environ", test_env, clear=True):
+            clean = get_sanitized_env()
+            self.assertIn("PATH", clean)
+            self.assertIn("USER", clean)
+            self.assertIn("SAFE_VAR", clean)
+            self.assertEqual(clean.get("GIT_TERMINAL_PROMPT"), "0")
+            # All sensitive keys must be completely stripped
+            for forbidden in ["GITHUB_TOKEN", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD", "CUSTOM_API_SECRET"]:
+                self.assertNotIn(forbidden, clean, f"Sensitive env var {forbidden} was not stripped!")
 
 
 if __name__ == "__main__":
