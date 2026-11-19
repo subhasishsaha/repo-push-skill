@@ -150,19 +150,41 @@ class TestIsolation(unittest.TestCase):
         self.assertIn("Backup verification failed", res_restore.stderr)
 
     def test_corrupted_key_fails_closed(self):
-        """A key file containing fewer than 32 bytes must be rejected as corrupted."""
+        """A key file containing fewer than 32 bytes (including zero bytes) must be rejected as corrupted."""
         import importlib.util
         import hashlib
         spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
         iso_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(iso_mod)
 
+        # Sub-test 1: 16-byte corrupted key
         with tempfile.TemporaryDirectory() as td:
             root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
             key_dir = iso_mod.get_key_dir()
             key_file = key_dir / f".repo_push_key_{root_hash}.secret"
-            # Write corrupted 16-byte key
             key_file.write_bytes(b"0123456789abcdef")
+            if os.name != "nt":
+                try:
+                    os.chmod(str(key_file), 0o600)
+                except Exception:
+                    pass
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    iso_mod.get_session_hmac_key(repo_root=td)
+                self.assertIn("Corrupted HMAC session key", str(ctx.exception))
+            finally:
+                if key_file.exists():
+                    try:
+                        key_file.unlink()
+                    except Exception:
+                        pass
+
+        # Sub-test 2: 0-byte empty corrupted key
+        with tempfile.TemporaryDirectory() as td:
+            root_hash = hashlib.sha256(os.path.abspath(td).encode("utf-8")).hexdigest()[:16]
+            key_dir = iso_mod.get_key_dir()
+            key_file = key_dir / f".repo_push_key_{root_hash}.secret"
+            key_file.write_bytes(b"")
             if os.name != "nt":
                 try:
                     os.chmod(str(key_file), 0o600)
@@ -296,6 +318,48 @@ class TestIsolation(unittest.TestCase):
                 self.assertFalse(iso_mod.verify_and_prepare_key_dir(permissive_dir))
             finally:
                 os.chmod = orig_chmod
+
+    def test_windows_dacl_enforcement(self):
+        """Windows DACL verification must reject broad principals (Everyone, Users) and accept restricted DACL."""
+        if os.name != "nt":
+            self.skipTest("Windows DACL enforcement test only runs on Windows (nt)")
+
+        import importlib.util
+        import subprocess
+        spec = importlib.util.spec_from_file_location("enforce_isolation", SCRIPT)
+        iso_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iso_mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            test_dir = Path(td) / "sec_keys"
+            test_dir.mkdir(parents=True, exist_ok=True)
+            test_file = test_dir / "test.secret"
+            test_file.write_bytes(b"A" * 32)
+
+            try:
+                # 1. Enforce strict DACL on directory and file
+                self.assertTrue(iso_mod.enforce_windows_dacl(test_dir, is_dir=True))
+                self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
+                self.assertTrue(iso_mod.verify_windows_dacl(test_dir))
+                self.assertTrue(iso_mod.verify_windows_dacl(test_file))
+
+                # 2. Grant Everyone:(R) to test file - must be rejected by verify_windows_dacl
+                res = subprocess.run(["icacls", str(test_file), "/grant", "Everyone:(R)"], capture_output=True, text=True)
+                if res.returncode == 0:
+                    self.assertFalse(iso_mod.verify_windows_dacl(test_file))
+
+                # 3. Grant Users:(R) to test directory - must be rejected by verify_windows_dacl
+                res = subprocess.run(["icacls", str(test_dir), "/grant", "Users:(R)"], capture_output=True, text=True)
+                if res.returncode == 0:
+                    self.assertFalse(iso_mod.verify_windows_dacl(test_dir))
+
+                # 4. Re-enforcing strict DACL must restore verified status
+                self.assertTrue(iso_mod.enforce_windows_dacl(test_dir, is_dir=True))
+                self.assertTrue(iso_mod.enforce_windows_dacl(test_file, is_dir=False))
+                self.assertTrue(iso_mod.verify_windows_dacl(test_dir))
+                self.assertTrue(iso_mod.verify_windows_dacl(test_file))
+            finally:
+                subprocess.run(["icacls", str(test_dir), "/reset", "/T"], capture_output=True)
 
 
 if __name__ == "__main__":

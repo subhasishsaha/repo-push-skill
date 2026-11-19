@@ -15,6 +15,7 @@ Security Architecture:
 """
 
 import argparse
+import getpass
 import hashlib
 import hmac
 import json
@@ -61,6 +62,165 @@ def get_candidate_key_dirs() -> list[Path]:
     return candidates
 
 
+def is_forbidden_windows_principal(t_lower: str) -> bool:
+    """
+    Checks if a Windows principal name or SID represents a broad, shared,
+    or untrusted group.
+    """
+    forbidden_names = {
+        "everyone", "users", "authenticated users", "guests",
+        "anonymous logon", "network", "interactive", "batch",
+        "service", "world", "domain users", "domain guests"
+    }
+    forbidden_sids = {
+        "s-1-1-0", "*s-1-1-0", "s-1-5-11", "*s-1-5-11",
+        "s-1-5-32-545", "*s-1-5-32-545", "s-1-5-32-546", "*s-1-5-32-546",
+        "s-1-5-7", "*s-1-5-7", "s-1-5-4", "*s-1-5-4", "s-1-5-2", "*s-1-5-2",
+        "s-1-5-3", "*s-1-5-3", "s-1-5-6", "*s-1-5-6"
+    }
+    if t_lower in forbidden_sids:
+        return True
+    name_part = t_lower.split("\\")[-1]
+    if name_part in forbidden_names:
+        return True
+    if "everyone" in t_lower or "authenticated users" in t_lower:
+        return True
+    return False
+
+
+def verify_windows_dacl(path: Path) -> bool:
+    """
+    Verifies that on Windows, the DACL for path is strictly restricted:
+    - Must NOT grant access to broad/untrusted principals (Everyone, Users, Authenticated Users, Guests, etc.)
+    - Must ONLY grant access to the current user, SYSTEM, Administrators, Creator Owner, or user-specific logon SIDs.
+    - Returns False if untrusted access is detected or if verification fails.
+    """
+    if os.name != "nt":
+        return True
+    try:
+        is_dir = path.is_dir()
+        target_name = "." if is_dir else path.name
+        cwd = str(path) if is_dir else str(path.parent)
+        res = subprocess.run(["icacls", target_name], cwd=cwd, capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return False
+
+        lines = res.stdout.splitlines()
+        username = (os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser() or "").lower()
+        user_domain = (os.environ.get("USERDOMAIN") or "").lower()
+
+        has_user_or_system = False
+        found_aces = False
+
+        for line in lines:
+            if ":(" not in line:
+                continue
+            clean_line = line.strip()
+            if clean_line.startswith(target_name):
+                clean_line = clean_line[len(target_name):].strip()
+
+            trustee = clean_line.split(":(")[0].strip()
+            if not trustee:
+                continue
+            found_aces = True
+            t_lower = trustee.lower()
+
+            if is_forbidden_windows_principal(t_lower):
+                return False
+
+            if t_lower in (
+                "nt authority\\system",
+                "system",
+                "s-1-5-18",
+                "*s-1-5-18",
+                "builtin\\administrators",
+                "administrators",
+                "s-1-5-32-544",
+                "*s-1-5-32-544",
+                "creator owner",
+                "s-1-3-0",
+                "*s-1-3-0",
+            ):
+                has_user_or_system = True
+                continue
+
+            # Current user check
+            if username and (
+                t_lower == username
+                or t_lower.endswith("\\" + username)
+                or t_lower == f"{user_domain}\\{username}"
+                or (user_domain and t_lower == f"{user_domain}\\")
+            ):
+                has_user_or_system = True
+                continue
+
+            # User session / sandbox capability SIDs (S-1-5-21-..., S-1-15-..., S-1-5-5-...)
+            if t_lower.startswith("s-1-5-21-") or t_lower.startswith("s-1-15-") or t_lower.startswith("s-1-5-5-"):
+                continue
+
+            # Unrecognized principal -> fail closed
+            return False
+
+        return found_aces and has_user_or_system
+    except Exception:
+        return False
+
+
+def enforce_windows_dacl(path: Path, is_dir: bool = False) -> bool:
+    """
+    On Windows, applies restrictive DACL to path:
+    - Disables inheritance and strips broad permissions (/inheritance:r)
+    - Removes explicit broad group grants (/remove:g Everyone, Users, Authenticated Users, Guests)
+    - Grants Full Control only to current user, SYSTEM (*S-1-5-18), and Administrators (*S-1-5-32-544)
+    """
+    if os.name != "nt":
+        return True
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser()
+    if not user:
+        return False
+    domain = os.environ.get("USERDOMAIN")
+    qualified_user = f"{domain}\\{user}" if domain else user
+    perm = "(OI)(CI)F" if is_dir else "F"
+    try:
+        # 1. Strip inherited permissions
+        subprocess.run(["icacls", str(path), "/inheritance:r"], capture_output=True, timeout=10)
+
+        # 2. Strip any explicit broad group grants
+        subprocess.run(
+            [
+                "icacls",
+                str(path),
+                "/remove:g",
+                "*S-1-1-0",
+                "*S-1-5-32-545",
+                "*S-1-5-11",
+                "*S-1-5-32-546",
+                "Users",
+                "Everyone",
+                "Authenticated Users",
+                "Guests",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+
+        # 3. Grant Full Control strictly to current user, SYSTEM, Administrators
+        cmd_grant = [
+            "icacls",
+            str(path),
+            "/grant:r",
+            f"{qualified_user}:{perm}",
+            "/grant:r",
+            f"*S-1-5-18:{perm}",
+            "/grant:r",
+            f"*S-1-5-32-544:{perm}",
+        ]
+        res = subprocess.run(cmd_grant, capture_output=True, text=True, timeout=10)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
 def verify_and_prepare_key_dir(d: Path) -> bool:
     """
     Verifies that directory d is safe for storing HMAC session keys:
@@ -68,6 +228,7 @@ def verify_and_prepare_key_dir(d: Path) -> bool:
     - Must NOT be a symbolic link
     - Must be a directory
     - On POSIX: must be owned by the current user and have strictly verified 0700 permissions.
+    - On Windows: must have strictly verified DACL restricted to current user and system principals.
     Returns True if fully verified; False otherwise.
     """
     try:
@@ -89,6 +250,10 @@ def verify_and_prepare_key_dir(d: Path) -> bool:
                 # Strictly verify group and other have zero permissions (0700)
                 if (st.st_mode & 0o077) != 0:
                     return False
+            else:
+                enforce_windows_dacl(d, is_dir=True)
+                if not verify_windows_dacl(d):
+                    return False
             return True
         else:
             d.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -101,6 +266,10 @@ def verify_and_prepare_key_dir(d: Path) -> bool:
                 if hasattr(os, "getuid") and st.st_uid != os.getuid():
                     return False
                 if (st.st_mode & 0o077) != 0:
+                    return False
+            else:
+                enforce_windows_dacl(d, is_dir=True)
+                if not verify_windows_dacl(d):
                     return False
             return True
     except Exception:
@@ -194,12 +363,9 @@ def get_session_hmac_key(repo_root=None):
         except Exception as e:
             raise RuntimeError(f"Failed to read HMAC session key at '{path}': {e}")
 
-        # Regular file owned by user with corrupted length must fail closed
-        if len(data) > 0 and len(data) != 32:
-            raise RuntimeError(f"Corrupted HMAC session key at '{path}': expected exactly 32 bytes, found {len(data)} bytes.")
-
+        # Regular file owned by user with corrupted length (including 0 bytes) must fail closed
         if len(data) != 32:
-            return None
+            raise RuntimeError(f"Corrupted HMAC session key at '{path}': expected exactly 32 bytes, found {len(data)} bytes.")
 
         # On POSIX: enforce restrictive permissions (0600)
         if os.name != "nt":
@@ -210,6 +376,10 @@ def get_session_hmac_key(repo_root=None):
                 except OSError:
                     pass
             if (st.st_mode & 0o077) != 0:
+                return None
+        else:
+            # On Windows: verify DACL restricts access strictly to current user and system principals
+            if not verify_windows_dacl(path):
                 return None
 
         return data
@@ -244,6 +414,8 @@ def get_session_hmac_key(repo_root=None):
                     os.chmod(str(temp_key_file), 0o600)
                 except Exception:
                     pass
+            else:
+                enforce_windows_dacl(temp_key_file, is_dir=False)
         except Exception:
             continue
 
@@ -275,6 +447,8 @@ def get_session_hmac_key(repo_root=None):
                     pass
 
         if published:
+            if os.name == "nt":
+                enforce_windows_dacl(kf, is_dir=False)
             persisted = validate_existing_key_file(kf)
             if persisted is not None and persisted == new_key:
                 return new_key
