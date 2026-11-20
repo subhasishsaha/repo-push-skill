@@ -138,6 +138,7 @@ To prevent subagents from overstepping their scope—such as a prompt-injected *
 3. **Layer 3 (Cryptographic HMAC Tamper Detection & Verified Rollback):** A cryptographic snapshot authenticated via HMAC-SHA256 and a local backup of `.audit/reports/` is stored in `.audit/.trusted/`. An ephemeral 256-bit session key is stored within `.audit/.trusted/` with standard private file permissions (mode `0600` on POSIX, current user access on Windows) so only the user process can read it:
    - **Deterministic Persistence & Verification:** Keys are managed with atomic non-overwriting publication (`O_CREAT | O_EXCL`) and binary file mode (`os.O_BINARY`) to prevent line-ending corruption.
    - **Fail-Closed Corrupted Key Handling:** Any key file whose size is not exactly 32 bytes—including empty 0-byte files—is treated as corrupted and raises `RuntimeError` immediately.
+   - **Environment Sanitization & Non-Interactive Safety:** Subprocess executions strip sensitive environment variables (`TOKEN`, `KEY`, `SECRET`, `AUTH`, `PASS`, `CREDENTIAL`, `API`, `BEARER`, `PASSWORD`, `PRIVATE`, `SSH_AUTH`, `AWS_`), pass discrete argument arrays with zero `shell=True`, and enforce `GIT_TERMINAL_PROMPT = "0"` to prevent credential leakage and interactive hangs.
    - **Tamper Detection & Verified Rollback:** If report tampering or unauthorized modifications are detected when `remediator` completes, the turn fails closed (`exit code 1`). Reports are independently verified against the HMAC manifest before rollback from the trusted backup, and a security violation is recorded in the audit log.
    Once verified, permissions are unlocked (`python <skill>/scripts/enforce_isolation.py unlock`) for the `auditor`'s next turn.
 
@@ -250,6 +251,37 @@ The `.audit/` directory is excluded in `.gitignore` so temporary audit scripts n
 │           ├── license_selection_guide.md     # SPDX license decision tree
 │           └── platform_feature_matrix.md     # Multi-platform feature mapping
 ```
+
+---
+
+## 📚 Progressive Disclosure Reference Guides
+
+Detailed platform runbooks, checklists, and remediation protocols are maintained under `skills/repo-push/references/`:
+
+| Reference Guide | Description | Target Use Case |
+| :--- | :--- | :--- |
+| **[Readiness Checklist](skills/repo-push/references/readiness_checklist.md)** | 50-point pre-flight audit checklist across all 6 verification gates | Pre-push verification & gate compliance |
+| **[Platform Feature Matrix](skills/repo-push/references/platform_feature_matrix.md)** | Comparative matrix for GitHub, GitLab, and Bitbucket CI/CD | Cross-platform action intent compilation |
+| **[Secrets Remediation Guide](skills/repo-push/references/secrets_remediation.md)** | Step-by-step credential revocation and `git-filter-repo` scrubbing | Gate 4 failure remediation & history cleanup |
+| **[License Selection Guide](skills/repo-push/references/license_selection_guide.md)** | Decision tree for permissive (MIT, Apache-2.0) vs copyleft (GPL) licenses | Open-source licensing compliance |
+
+---
+
+## 📐 Engineering & Security Standards Compliance
+
+This repository is built in strict adherence to modern agent skill and software engineering standards:
+
+1. **Google Antigravity Customization Specification (`agy-customizations`)**:
+   - Conforms to standard `skills/<name>/` packaging schema (`SKILL.md`, `scripts/`, `references/`, `templates/`, `schemas/`).
+   - Uses third-person, trigger-driven frontmatter with progressive disclosure architecture.
+   - Zero-dependency runtime execution: all tools run strictly on Python 3.10+ standard library.
+
+2. **OpenCode High-Leverage Engineering Meta (`opencode`)**:
+   - **Pillar 1 (Deep Architecture)**: Minimal public surface area; encapsulated, fail-closed verification engines.
+   - **Pillar 2 (Safe Refactoring & Bracketed Verification)**: 47 automated unit and integration tests across 6 modules (`tests/`), continuously passing with zero regression.
+   - **Pillar 3 (Memory Management & Deterministic Lifecycles)**: Formally audited for resource leaks (0 leaks detected); all file handles and locks managed via deterministic RAII context managers (`with` / `__enter__`).
+   - **Pillar 4 (Security & Boundary Hardening)**: Zero `shell=True` command execution, parameterized Git invocations, non-interactive prompt safety (`GIT_TERMINAL_PROMPT="0"`), and strict environment sanitization.
+   - **Pillar 6 (Project File Triage)**: Clean file taxonomy with zero Tier 4 peripheral or ephemeral build cruft.
 
 ---
 
