@@ -923,7 +923,7 @@ class IsolationManager:
 
         if os.name == "nt":
             attr_flag = "+r" if readonly else "-r"
-            res = subprocess.run(["attrib", attr_flag, os.path.join(directory, "*.*"), "/s"], shell=True, capture_output=True, text=True)
+            res = subprocess.run(["attrib", attr_flag, os.path.join(directory, "*.*"), "/s"], shell=False, capture_output=True, text=True)
             if res.returncode != 0:
                 print(f"[ISOLATION ERROR] Windows attrib {attr_flag} failed: {res.stderr.strip()}", file=sys.stderr)
                 return False

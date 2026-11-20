@@ -37,12 +37,16 @@ EXCLUSIONS_MAP = {
 
 def run_cmd(args):
     try:
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
         res = subprocess.run(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            timeout=10,
+            env=env
         )
         return res.stdout.strip()
     except Exception:

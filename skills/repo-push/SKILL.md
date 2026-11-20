@@ -1,9 +1,15 @@
 ---
 name: repo-push
-description: Orchestrator protocol for multi-agent adversarial codebase preparation and push. The coordinator spawns and manages subagents (Explorer, Documenter, Auditor, Remediator). Subagents write their own dynamic audit scripts in '.audit/.scratch/' and strictly adhere to behavioral isolation contracts stored in '.audit/.agents/'.
+description: >-
+  Audits, sanitizes, packages, and prepares codebases for GitHub, GitLab, Bitbucket,
+  or remote Git hosting. Spawns and orchestrates specialized subagents (Explorer, Documenter,
+  Auditor, Remediator) under a 3-layer behavioral isolation model to verify implementation
+  integrity, enforce hygiene, check AST/dependency consistency, scan secrets across commit
+  history, and execute isolated publishing. Use this skill when asked to review, audit, sanitize,
+  prepare, or publish a repository to a remote Git host.
 license: Apache-2.0
 metadata:
-  version: v4
+  version: v4.1
   architecture: orchestrator-subagent-behavioral-isolation
   compatibility: universal-agent-agnostic
 ---
@@ -13,6 +19,21 @@ metadata:
 An orchestrator-driven multi-agent verification protocol that guarantees **truth in code and documentation** before publishing or pushing to GitHub, GitLab, Bitbucket, or remote Git hosting.
 
 The primary coordinator acts as the **Orchestrator**. It does not perform audits directly; it defines, spawns, and coordinates specialized **subagents** (`explorer`, `documenter`, `auditor`, `remediator`).
+
+---
+
+## 📚 Progressive Disclosure Reference Guides
+
+Detailed platform guides, checklists, and remediation protocols are stored in `references/`. Read only the specific reference file needed for your active task:
+
+1. **Readiness Checklist**: [readiness_checklist.md](./references/readiness_checklist.md)  
+   *Pre-flight operational checklist across all 6 verification gates.*
+2. **Platform Feature Matrix**: [platform_feature_matrix.md](./references/platform_feature_matrix.md)  
+   *Platform-specific CI/CD, release mechanics, and actions mapping for GitHub, GitLab, and Bitbucket.*
+3. **Secrets Remediation Guide**: [secrets_remediation.md](./references/secrets_remediation.md)  
+   *Handling detected secrets, credential revocation, git history rewriting with git-filter-repo, and secret rotation.*
+4. **License Selection Guide**: [license_selection_guide.md](./references/license_selection_guide.md)  
+   *Choosing permissive vs copyleft open-source licenses (MIT, Apache-2.0, MPL-2.0, GPL-3.0).*
 
 ---
 

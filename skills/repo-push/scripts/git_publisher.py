@@ -100,13 +100,16 @@ class PublishingLock:
 
 
 def git_cmd(args, cwd=None, check=True):
-    """Executes a git command with argument arrays. Never uses shell=True."""
+    """Executes a git command with argument arrays. Never uses shell=True and prevents interactive hangs."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
     res = subprocess.run(
         ["git"] + args,
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True
+        text=True,
+        env=env
     )
     if check and res.returncode != 0:
         cmd_str = "git " + " ".join(args)
